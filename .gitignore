@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Runtime artifacts
+models/
+vendor/
+*.gguf
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
