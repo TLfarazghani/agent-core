@@ -81,7 +81,11 @@ class CountingHandler:
 def make_registry() -> tuple[ToolRegistry, CountingHandler]:
     registry = ToolRegistry()
     counter = CountingHandler()
-    registry.load_json("tools/registry.json", {"echo": counter.echo, "run_code": counter.run_code})
+    registry.load_json(
+        "tools/registry.json",
+        {"echo": counter.echo, "run_code": counter.run_code},
+        names={"echo", "run_code"},
+    )
     return registry, counter
 
 

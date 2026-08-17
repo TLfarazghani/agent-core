@@ -29,7 +29,6 @@ py -3.13 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python test_smoke.py          # Phase 0 core checks
 .\windows\server_config.ps1                 # start llama-server
-.venv\Scripts\python -m cli                 # chat with the agent
 ```
 
 ## Key documents
@@ -38,4 +37,5 @@ py -3.13 -m venv .venv
 - [docs/architecture.md](docs/architecture.md) — system diagram, module layout, sandbox decisions
 - [docs/data-contracts.md](docs/data-contracts.md) — ToolDefinition / ChatMessage / AgentState / tool contracts
 - [docs/benchmarks.md](docs/benchmarks.md) — measurement template for the shipped gate
+- [docs/ui-ux-design.md](docs/ui-ux-design.md) — CLI / Web / Android UX spec, approval flow, design tokens
 - [AGENTS.md](AGENTS.md) — rules and commands for AI agents working here

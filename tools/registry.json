@@ -24,5 +24,46 @@
       },
       "required": ["language", "code"]
     }
+  },
+  {
+    "name": "web_search",
+    "description": "Search the web and return top results for a query.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": { "type": "string", "minLength": 1 }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "send_email",
+    "description": "Send an email message.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "to": { "type": "string" },
+        "subject": { "type": "string" },
+        "body": { "type": "string" },
+        "attachments": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["to", "subject", "body"]
+    }
+  },
+  {
+    "name": "send_message",
+    "description": "Send a chat message to a messaging channel.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "channel": { "type": "string", "enum": ["whatsapp", "telegram"] },
+        "to": { "type": "string" },
+        "text": { "type": "string" }
+      },
+      "required": ["channel", "to", "text"]
+    }
   }
 ]

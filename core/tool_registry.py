@@ -48,12 +48,24 @@ class ToolRegistry:
         for definition, handler in entries:
             self.register(definition, handler)
 
-    def load_json(self, path: str | Path, handlers: dict[str, ToolHandler]) -> None:
+    def load_json(
+        self,
+        path: str | Path,
+        handlers: dict[str, ToolHandler],
+        names: set[str] | None = None,
+    ) -> None:
+        """Register tools from a JSON file.
+
+        ``names`` restricts which entries are registered (used to load a
+        subset such as only the networked tools); ``None`` registers all.
+        """
         with Path(path).open(encoding="utf-8") as fh:
             entries = json.load(fh)
         for definition in entries:
-            self._validate_definition(definition)
             name = definition["name"]
+            if names is not None and name not in names:
+                continue
+            self._validate_definition(definition)
             if name not in handlers:
                 raise ValueError(f"no handler provided for tool '{name}'")
             self.register(definition, handlers[name])

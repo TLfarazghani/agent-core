@@ -4,55 +4,39 @@ description: Core rules, architecture, and commands for AI agents working in thi
 ---
 
 # Project Overview
-- **Name:** agent-core
-- **Purpose:** A general-purpose local "JARVIS" assistant on LFM2.5 — research/search, email, messaging, DOCX/PPTX generation, and arbitrary code execution — built from one transport-agnostic agent core.
-- **Scope (locked 2026-08-17):** full feature set built at once rather than sequenced. Accepted trade-off: competes on distribution against established free projects (Open Interpreter, Jan, Goose, AGiXT, LibreChat); there is no domain moat at this scope.
-- **Tech Stack:** Python 3.13 (core + Windows), pydantic + jsonschema, llama.cpp llama-server (GGUF, `--jinja`), docker-py (code sandbox). Later: Kotlin/JNI (Android, LEAP SDK), Transformers.js + ONNX Runtime Web (WebGPU, Pyodide sandbox).
+- **agent-core** — a transport-agnostic agent core for local LFM2.5 inference (Windows first, Android/WebGPU planned). General-purpose "JARVIS" assistant: search, email, messaging, docx/pptx, code execution.
+- **Built:** Phase 0 core (`core/`), JSON Schemas (`schemas/`), `test_smoke.py`, `tools/registry.json`, `windows/server_config.ps1`; Phase 1 networked tools (`tools/remote.py` MCP-client + `tools/__init__.py` handlers + `test_networked_tools.py`).
+- **NOT built yet:** `cli.py`, `windows/orchestrator.py`, Phase 2 doc-gen handlers, Phase 3 `run_code` sandbox. Do not run or reference `python -m cli`.
+- Design decisions and phased plan: `docs/plan.md`, `docs/architecture.md`, `docs/data-contracts.md`, `docs/ui-ux-design.md`.
 
-# Essential Commands
-- **Create venv:** `py -3.13 -m venv .venv`
-- **Install deps:** `.venv\Scripts\python -m pip install -r requirements.txt`
-- **Run tests:** `.venv\Scripts\python test_smoke.py`
-- **Run CLI agent:** `.venv\Scripts\python -m cli` (requires llama-server running)
-- **Start server:** `.\windows\server_config.ps1` (requires `vendor\llama\llama-server.exe` + `models\`)
+# Essential Commands (run from repo root; always use the venv interpreter)
+- **Create venv:** `py -3.13 -m venv .venv` — REQUIRED. `python` is 3.13.5 but system `pip` resolves to a 3.10 site-packages; never call bare `pip`.
+- **Install:** `.venv\Scripts\python -m pip install -r requirements.txt` (pydantic, jsonschema)
+- **Run all tests:** `.venv\Scripts\python test_smoke.py` (single file at repo root; pytest also picks it up via `.venv\Scripts\python -m pytest`)
+- **Model download:** `.venv\Scripts\hf.exe download LiquidAI/LFM2.5-1.2B-Instruct-GGUF LFM2.5-1.2B-Instruct-Q4_K_M.gguf --local-dir models`
+  - huggingface-hub 1.x has **no `python -m huggingface_hub` module**; use `hf.exe`/`huggingface-cli.exe` in `.venv\Scripts`.
+  - GGUF filename is capitalized `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` — the lowercase name in Liquid docs is stale.
+- **Start server:** `.\windows\server_config.ps1` (serves `127.0.0.1:8001`, model `LFM2.5-1.2B-Instruct`)
 
-# Architecture Rules (non-negotiable)
-- The agent loop, tool registry, state machine, and **approval gate** live in `core/` and are **transport-agnostic**. Platform code only adapts `AgentState → provider request` and `provider response → parsed ToolCall[]`, plus its own `run_code` sandbox backend.
-- Never write agent logic inside platform code. It must be duplicated, and it will drift.
-- `AgentState`, `ChatMessage`, and `ToolDefinition` are validated by pydantic against the JSON schemas in `schemas/` before any code runs.
-- The tool-call parser is **ONE implementation** (`core/parser.py`), stdlib-only. Ports (parser.js, AgentCore.kt) must be line-for-line ports, never rewritten regexes.
-- The `run_code` approval gate is **hardcoded in `tool_registry.dispatch()`**, never model-decided or per-platform. It is verified by `test_smoke.py`.
-- No fourth target and no second model until the Windows path has shipped and been measured (see `docs/benchmarks.md`).
-- Android has **no run_code sandbox** (platform ceiling) — it either delegates to a reachable Windows instance or ships without it. This is tracked as an open item, not forgotten.
+# Architecture (non-obvious, do not violate)
+- The loop, tool registry, state machine, and **approval gate** live in `core/` and are transport-agnostic. Platform code only adapts `AgentState → provider request` / `response → ToolCall[]`; it never re-implements the loop. UIs render `AgentState` and resolve approvals — see `docs/ui-ux-design.md`.
+- `core/parser.py` must stay **stdlib-only** (`ast`-based Pythonic extraction, no `eval`). It is the cross-language contract ported line-for-line to `parser.js` / `AgentCore.kt`. Never add third-party imports.
+- Approval gate: `run_code` (and any `requires_approval` tool) halts via `state.pending_approval`, enforced **hardcoded in `core/tool_registry.dispatch()`** — never model-decided, never per-platform. `core/loop.resolve_approval(approved=bool)` is the only way through; only `approved=True` executes.
+- `AgentState`/`ChatMessage`/`ToolDefinition` are validated with pydantic against `schemas/*.json` before any tool runs. Tool args are also validated against each tool's `parameters` schema in `ToolRegistry.execute`.
+- **Contract is snake_case, not OpenAI camelCase:** `ChatMessage` uses `content` (string), `function_calls[]`, `tool_call_id`. The future `windows/orchestrator.py` must map llama.cpp's camelCase `tool_calls` to this shape.
+- Tool handlers are registered by name; `tools/registry.json` is loaded via `ToolRegistry.load_json(path, handlers)` where `handlers` maps tool name → `callable(arguments: dict) -> str`.
 
-# Protocol Decision (documented, do not drift)
-- LFM2.5 emits native **Pythonic** tool calls (`func(arg="value")`) between `<|tool_call_start|>` / `<|tool_call_end|>`. The parser uses Python's `ast` module to extract them into `arguments` dicts — **no eval, no regex**.
-- On Windows, `llama.cpp --jinja` emits structured `tool_calls` natively; the parser covers raw-completion paths (WebGPU and any non-jinja fallback).
+# Toolchain gotchas
+- **llama.cpp:** prebuilt cu12.4 binary in `vendor\llama\` (works on the CUDA 12.9 driver). No cmake/MSVC on this machine — never build from source. The **`--jinja` flag is mandatory** for OpenAI-shaped `tool_calls`.
+- **Never use Ollama** for this GGUF — older syncs throw `missing tensor 'output_norm'`. Use the direct llama.cpp binary + direct HF download.
+- **openai is v3** (3.1.0): the v1 `client.chat.completions` API shape in the research docs is outdated; the orchestrator must target the v3 client API.
+- `.venv/`, `models/`, `vendor/` are gitignored — binaries/weights are never committed. Repo is a git repo (commits exist); keep docs/code in sync when schemas change.
 
-# Data Contracts
-- **ToolDefinition:** `schemas/tool_definition.schema.json` — name, description, `requires_approval` (bool), JSON-Schema `parameters`.
-- **ChatMessage:** `schemas/chat_message.schema.json` — `role`, string `content`, `tool_call_id`, snake_case `function_calls`. Shared verbatim across targets.
-- **AgentState:** `schemas/agent_state.schema.json` — session_id, target, model, messages, max_turns (8), turn_count, `pending_approval`.
-- **Tool contracts by category:**
-  - Networked (uniform MCP-remote): `web_search(query)`, `send_email(to, subject, body, attachments?)`, `send_message(channel, to, text)`
-  - Local compute (per-platform backend): `create_docx(title, sections)`, `create_pptx(title, slides)`
-  - Code execution (`requires_approval` always true): `run_code(language, code, timeout_seconds)`
-- See `docs/data-contracts.md` for full definitions.
+# Testing quirks
+- `test_smoke.py` is deliberately one self-contained file with `assert`-based tests and a `main()` runner; it proves the approval gate (ordinary call executes, `run_code` halts, rejection clears without executing). It runs without pytest installed. Keep this property.
+- `test_networked_tools.py` (Phase 1) runs the same way and spins up a stdlib `http.server` mock MCP-remote — no real network, no external services.
+- Each test file filters `tools/registry.json` to its own tools via `load_json(..., names={...})`. Adding a tool to `registry.json` will break other suites unless they pass `names=`.
+- No `tests/` package and no pytest config exist — don't invent one unless a phase needs it.
 
-# Code Style & Rules
-- Python 3.13, type hints everywhere, pydantic models for all data entering the core.
-- `core/parser.py` must stay **stdlib-only** (it is the cross-language contract).
-- Keep modules small and single-purpose. Tests live in `test_smoke.py` (Phase 0) and grow per phase.
-- Never modify `schemas/*.json` without updating `core/state.py` and both contract docs.
-- No code comments unless they explain a non-obvious decision; prefer self-documenting names.
-
-# Workflow & Error Handling
-- If a build or test fails, read the error output completely before attempting a fix.
-- Do not guess library methods; verify parameters against the docs (Liquid Docs MCP, llama.cpp README, pydantic docs).
-- Known trap: GGUF pulled through Ollama may throw `missing tensor 'output_norm'` for LFM2.5. Use the direct llama.cpp binary + direct GGUF from HF, never Ollama, unless the sync status is confirmed.
-- Pin exact versions (llama.cpp binary, GGUF, Python packages) and record them; reproducibility is a requirement for porting.
-
-# Verification Gates
-- Phase complete only when the phase's tests pass AND any real-server steps pass manually.
-- Phase 3 (code execution) gate is the approval flow: `step()` halts on `pending_approval`; `resolve_approval()` only executes on `approved=True`.
-- Phase 4 (parity) requires recorded tok/s + tool-call accuracy in `docs/benchmarks.md` before the Windows path is considered shipped.
+# Docs references
+- Research source: `C:\hermes\local-agent-lfm25-research.md` and `C:\hermes\New_local-agent-lfm25-research.md` (the latter is authoritative — it defines the current scope, contracts, and Phase 0-4 plan).

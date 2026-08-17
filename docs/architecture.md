@@ -61,13 +61,12 @@ agent-core/
     parser.py              # ast-based Pythonic tool-call extraction, no eval (stdlib only)
     tool_registry.py       # schema validation on register(), approval gate in dispatch()
     loop.py                # step() / resolve_approval(), platform-agnostic
-  tools/                   # real tool handlers (Phase 1-3)
-    web_search.py
-    send_email.py
-    send_message.py
-    create_docx.py
-    create_pptx.py
-    run_code.py            # requires_approval always true (hardcoded)
+  tools/                   # real tool handlers
+    registry.json          # all tool definitions (echo, run_code, networked, doc-gen later)
+    remote.py              # McpClient — stdlib JSON-RPC MCP tools/call transport (portable)
+    __init__.py            # register_networked_tools(): binds web_search/send_email/send_message
+    # Phase 2: create_docx.py, create_pptx.py (local compute, python-docx/pptx)
+    # Phase 3: run_code.py (requires_approval always true, hardcoded)
   windows/                 # Windows transport (llama.cpp) — Phase 4
     server_config.ps1      # llama-server launch params
     orchestrator.py        # imports core.loop, wraps OpenAI client

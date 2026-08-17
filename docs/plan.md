@@ -59,13 +59,14 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 
 ## Phase 1 — Networked tools (uniform MCP-remote)
 
-- [ ] `tools/web_search.py` — `web_search(query)`
-- [ ] `tools/send_email.py` — `send_email(to, subject, body, attachments?)`
-- [ ] `tools/send_message.py` — `send_message(channel, to, text)` (whatsapp|telegram)
-- [ ] Uniform MCP-remote transport so all three platforms share the identical HTTP/SSE implementation shape (no subprocess transport issue)
-- [ ] Tool tests with mocked remotes
+- [x] `tools/remote.py` — `McpClient` (stdlib-only JSON-RPC over HTTP, MCP `tools/call` shape; ports to JS/Kotlin)
+- [x] `tools/web_search.py` — `web_search(query)`
+- [x] `tools/send_email.py` — `send_email(to, subject, body, attachments?)`
+- [x] `tools/send_message.py` — `send_message(channel, to, text)` (whatsapp|telegram)
+- [x] Uniform MCP-remote transport so all three platforms share the identical HTTP implementation shape (no subprocess transport issue)
+- [x] Tool tests with mocked remotes (`test_networked_tools.py` — stdlib HTTP mock, no real network)
 
-**Gate:** each networked tool dispatch returns schema-valid results with a mocked remote.
+**Gate:** each networked tool dispatch returns schema-valid results with a mocked remote. **PASSED 2026-08-17** (6/6).
 
 ## Phase 2 — Local doc-gen (per-platform backends)
 
