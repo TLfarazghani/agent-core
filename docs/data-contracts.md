@@ -1,24 +1,19 @@
 # Data Contracts
 
-The authoritative definitions. The JSON Schemas in `schemas/` are the source of truth; `core/schemas.py` mirrors them in pydantic. Define these before any code — never "whatever the model happens to emit."
+The authoritative definitions. The JSON Schemas in `schemas/` are the source of truth; `core/state.py` mirrors them in pydantic. Define these before any code — never "whatever the model happens to emit."
 
-These contracts are shared verbatim across Windows, Android, and Web. `ChatMessage` mirrors the Leap SDK's OpenAI-compatible shape so payloads are interchangeable between targets.
+These contracts are shared verbatim across Windows, Android, and Web.
 
-## ToolDefinition
+## Core envelope (ToolDefinition)
 
 Source: `schemas/tool_definition.schema.json`. Goes in the system prompt or `tools=` param.
 
 ```json
 {
   "name": "get_object_info",
-  "description": "Return transform, mesh stats, and material slots for a Blender object by name.",
-  "parameters": {
-    "type": "object",
-    "properties": {
-      "object_name": { "type": "string" }
-    },
-    "required": ["object_name"]
-  }
+  "description": "...",
+  "requires_approval": false,
+  "parameters": { "type": "object", "properties": { "...": "..." }, "required": [] }
 }
 ```
 
@@ -26,49 +21,42 @@ Source: `schemas/tool_definition.schema.json`. Goes in the system prompt or `too
 |---|---|---|
 | `name` | string | required; unique within a registry |
 | `description` | string | required; how the model decides to call it |
+| `requires_approval` | boolean | required; default `false`. `run_code` is **always** `true`, hardcoded in `tool_registry.dispatch()`, never model-decided |
 | `parameters` | JSON Schema object | required; `type: "object"` |
 
 ## ToolCall
 
-The result of parsing a model message. Identified by a stable `id` so tool results can be correlated.
+Parsed from a model message. Identified by a stable `id` so tool results can be correlated.
 
 ```json
 {
   "id": "call_0001",
   "name": "get_object_info",
-  "arguments": { "object_name": "Cube.003" }
+  "arguments": {}
 }
 ```
 
-**Arguments are always JSON** — protocol decision in AGENTS.md. The model's Pythonic calls (`get_object_info(object_name="Cube.003")`) are forced to JSON via the system prompt.
-
 ## ChatMessage
 
-Source: `schemas/chat_message.schema.json`. Mirrors the Leap SDK `ChatMessage` (OpenAI-compatible). Reused everywhere so Windows/Android/Web payloads are interchangeable.
+Source: `schemas/chat_message.schema.json`. OpenAI-compatible, snake_case. Reused everywhere so payloads are interchangeable.
 
 ```json
 {
   "role": "user | assistant | tool | system",
-  "content": [{ "type": "text", "text": "..." }],
-  "reasoningContent": null,
-  "functionCalls": [
-    {
-      "id": "call_0001",
-      "name": "get_object_info",
-      "arguments": { "object_name": "Cube.003" }
-    }
-  ]
+  "content": "string",
+  "tool_call_id": "string | null",
+  "function_calls": [ { "id": "call_0001", "name": "...", "arguments": {} } ]
 }
 ```
 
 | Field | Type | Rules |
 |---|---|---|
 | `role` | enum | `user`, `assistant`, `tool`, `system` |
-| `content` | array of blocks | each block `{ "type": "text", "text": "..." }`; may be empty when `functionCalls` present |
-| `reasoningContent` | string \| null | unused for Instruct; reserved for Thinking variants |
-| `functionCalls` | array of ToolCall \| null | absent for user/system/tool messages |
+| `content` | string | plain text; may be empty when `function_calls` present |
+| `tool_call_id` | string \| null | correlates a `tool` message to the assistant's `function_calls[].id` |
+| `function_calls` | array of ToolCall \| null | absent for user/system/tool messages |
 
-Tool-result messages use `role: "tool"` and carry the result in `content`, correlated via `functionCalls[].id` on the preceding assistant message.
+Tool-result messages use `role: "tool"`, carry the result in `content`, and set `tool_call_id` to the call being answered.
 
 ## AgentState
 
@@ -80,9 +68,9 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "target": "windows | android | webgpu",
   "model": "LFM2.5-1.2B-Instruct",
   "messages": [],
-  "tool_registry": [],
   "max_turns": 8,
-  "turn_count": 0
+  "turn_count": 0,
+  "pending_approval": null
 }
 ```
 
@@ -92,17 +80,51 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 | `target` | enum | `windows`, `android`, `webgpu` |
 | `model` | string | model identifier for the provider |
 | `messages` | array of ChatMessage | the full conversation history |
-| `tool_registry` | array of ToolDefinition | available tools for this session |
 | `max_turns` | int | loop cap, default 8 |
 | `turn_count` | int | incremented by the loop each generate+execute cycle |
+| `pending_approval` | object \| null | `{ "call_id", "tool_name", "arguments" }`; non-null exactly when a `requires_approval` call is waiting on a human |
+
+`pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention.
+
+## Tool contracts by category
+
+**Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue):**
+
+```json
+{ "name": "web_search", "parameters": { "query": "string" } }
+{ "name": "send_email", "parameters": { "to": "string", "subject": "string", "body": "string", "attachments": "string[]?" } }
+{ "name": "send_message", "parameters": { "channel": "whatsapp|telegram", "to": "string", "text": "string" } }
+```
+
+**Local compute — schema identical, backend is a separate implementation per platform:**
+
+```json
+{ "name": "create_docx", "parameters": { "title": "string", "sections": [{ "heading": "string", "body": "string" }] } }
+{ "name": "create_pptx", "parameters": { "title": "string", "slides": [{ "title": "string", "bullets": "string[]" }] } }
+```
+
+| Tool | Windows | Android | WebGPU |
+|---|---|---|---|
+| create_docx | python-docx | Apache POI (heavy — reconsider for v1) | docx.js |
+| create_pptx | python-pptx | Apache POI (heavy — reconsider for v1) | pptxgenjs |
+
+**Code execution — own risk class. `requires_approval` always true, hardcoded in `tool_registry.dispatch()`, never model-decided:**
+
+```json
+{
+  "name": "run_code",
+  "parameters": { "language": "python|javascript|bash", "code": "string", "timeout_seconds": "integer" },
+  "requires_approval": true
+}
+```
 
 ## Enforcement
 
-- **Windows (Python):** pydantic models in `core/schemas.py`; every message validated entering/leaving the core.
+- **Windows (Python):** pydantic in `core/state.py`; jsonschema on `register()`.
 - **Android (Kotlin):** `kotlinx.serialization` — same shape, same field names.
 - **Web (JS):** zod or manual guards — same shape.
 - Not "whatever the model happens to emit." Schema enforcement runs before any tool executes.
 
-## Sample payloads for tests
+## Test fixtures
 
-The three JSON documents above are the canonical test fixtures. `tests/test_schemas.py` validates these exact payloads against the schemas and pydantic models, plus invalid variants (bad role, non-object arguments, missing required parameter).
+`test_smoke.py` uses the contracts above: an ordinary tool executes; `run_code` sets `pending_approval` and halts; `resolve_approval(approved=False)` clears state without executing; `resolve_approval(approved=True)` runs.

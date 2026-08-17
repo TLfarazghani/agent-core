@@ -1,0 +1,28 @@
+[
+  {
+    "name": "echo",
+    "description": "Return the given text verbatim.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" }
+      },
+      "required": ["text"]
+    }
+  },
+  {
+    "name": "run_code",
+    "description": "Execute arbitrary code in a sandbox. Always requires human approval.",
+    "requires_approval": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "language": { "type": "string", "enum": ["python", "javascript", "bash"] },
+        "code": { "type": "string" },
+        "timeout_seconds": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["language", "code"]
+    }
+  }
+]

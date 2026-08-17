@@ -9,23 +9,28 @@ graph TB
     subgraph Core["Shared Agent Core (portable, no platform code)"]
         ST[AgentState JSON]
         TR[ToolRegistry JSON Schema]
-        PARSE["Tool-call parser<br/>&lt;|tool_call_start|&gt;...&lt;|tool_call_end|&gt;"]
-        LOOP["Loop: build prompt → generate →<br/>parse tool_call → execute → append tool result → repeat"]
+        PARSE["Tool-call parser<br/>&lt;|tool_call_start|&gt;...&lt;|tool_call_end|&gt; (ast-based)"]
+        GATE["Approval gate<br/>hardcoded in dispatch(), not model-controlled"]
+        LOOP["Loop: build prompt → generate →<br/>parse tool_call → gate check → execute → append tool result → repeat"]
         ST --> LOOP
         TR --> LOOP
         PARSE --> LOOP
+        GATE --> LOOP
     end
 
     subgraph Win["Windows native (current)"]
         W1["llama.cpp llama-server<br/>GGUF, --jinja, /v1/chat/completions"]
+        W2["run_code sandbox: Docker (docker-py)"]
     end
 
     subgraph And["Android native (planned port)"]
         A1["LEAP Android SDK (Kotlin/JNI)<br/>Conversation + ChatMessage + LeapFunctionCall"]
+        A2["run_code: NOT available on-device —<br/>delegate to reachable Windows instance, or omit"]
     end
 
     subgraph Web["Browser / WebGPU (planned port)"]
         B1["Transformers.js v3+ → ONNX Runtime Web<br/>device: 'webgpu', WASM fallback"]
+        B2["run_code sandbox: Pyodide (already tab-sandboxed)"]
     end
 
     Core -->|OpenAI-shape JSON over localhost| Win
@@ -33,7 +38,14 @@ graph TB
     Core -->|same schema, in-memory JS object| Web
 ```
 
-**Rule:** the agent loop, tool registry, and state machine live in the Core and are transport-agnostic. Each platform only implements a thin adapter that turns `AgentState → provider request` and `provider response → parsed ToolCall[]`. Writing agent logic inside platform code duplicates it three times and it drifts.
+**Rule:** the agent loop, tool registry, state machine, and **approval gate** live in the Core and are transport-agnostic. Each platform only implements a thin adapter that turns `AgentState → provider request` and `provider response → parsed ToolCall[]`, plus its own `run_code` sandbox backend.
+
+## Build order (forced by dependency)
+
+```mermaid
+graph LR
+    P0["Phase 0 — Core<br/>AgentState + parser + registry + approval gate"] --> P1["Phase 1 — Networked tools<br/>search, email, messaging (MCP-remote)"] --> P2["Phase 2 — Local doc-gen<br/>docx/pptx"] --> P3["Phase 3 — Code execution + sandbox<br/>highest-risk, own subsystem"] --> P4["Phase 4 — Cross-platform parity<br/>Android + WebGPU ports"]
+```
 
 ## Module layout
 
@@ -44,32 +56,36 @@ agent-core/
     chat_message.schema.json
     agent_state.schema.json
   core/                    # portable agent core (Python, no platform code)
-    schemas.py             # pydantic models mirroring schemas/*.json
-    loop.py                # platform-agnostic agent loop
-    tool_registry.py       # tool dispatch table, validated at load time
-    parser.py              # <|tool_call_start|>...<|tool_call_end|> → ToolCall[] (stdlib only)
-    tools/
-      registry.json        # stub reference tool definitions
-      fs_tools.py          # stub tool implementations
-  windows/                 # Windows transport (llama.cpp)
+    __init__.py
+    state.py               # pydantic AgentState / ChatMessage / PendingApproval
+    parser.py              # ast-based Pythonic tool-call extraction, no eval (stdlib only)
+    tool_registry.py       # schema validation on register(), approval gate in dispatch()
+    loop.py                # step() / resolve_approval(), platform-agnostic
+  tools/                   # real tool handlers (Phase 1-3)
+    web_search.py
+    send_email.py
+    send_message.py
+    create_docx.py
+    create_pptx.py
+    run_code.py            # requires_approval always true (hardcoded)
+  windows/                 # Windows transport (llama.cpp) — Phase 4
     server_config.ps1      # llama-server launch params
     orchestrator.py        # imports core.loop, wraps OpenAI client
+    run_code.py            # docker-py sandbox handler
   android/                 # planned port — structure reserved
-    AgentCore.kt           # Kotlin port of core/loop.py control flow (ported, not reinvented)
+    AgentCore.kt           # Kotlin port of core/ control flow
   web/                     # planned port — structure reserved
     worker.js
     parser.js              # line-for-line port of core/parser.py
-  tests/
-    test_schemas.py
-    test_tool_registry.py
-    test_parser.py
-    test_loop.py
+    run_code.js            # Pyodide worker
+  test_smoke.py            # Phase 0 smoke test (approval gate proof)
+  requirements.txt         # pydantic, jsonschema
   docs/                    # this documentation set
   models/                  # GGUF weights (gitignored)
   vendor/                  # llama.cpp binaries (gitignored)
 ```
 
-## Data flow (Windows path, Phase 5)
+## Data flow (Windows path, Phase 4)
 
 ```mermaid
 sequenceDiagram
@@ -77,20 +93,45 @@ sequenceDiagram
     participant CORE as core/loop.py
     participant ORCH as windows/orchestrator.py
     participant SERVER as llama-server (--jinja)
+    participant REG as core/tool_registry.py
 
-    CLI->>CORE: run_turn(state)
+    CLI->>CORE: step(state)
     CORE->>ORCH: generate(state, tools=)
     ORCH->>SERVER: POST /v1/chat/completions (tools=)
     SERVER-->>ORCH: message with tool_calls[]
     ORCH-->>CORE: ChatMessage (OpenAI shape)
-    CORE->>CORE: parse / validate functionCalls
-    CORE->>CORE: dispatch via tool_registry
-    CORE-->>CLI: updated state (tool result appended)
+    CORE->>CORE: parse / validate function_calls
+    CORE->>REG: dispatch(call)
+    alt requires_approval=True
+        REG-->>CORE: set pending_approval, HALT
+        CORE-->>CLI: pending approval (loop refuses step)
+        CLI->>CORE: resolve_approval(approved=bool)
+    else ordinary tool
+        REG-->>CORE: tool result appended
+    end
+    CORE-->>CLI: updated state
 ```
 
-## Model selection (from research doc §2)
+## Approval gate (enforced in code, not convention)
 
-Start with **LFM2.5-1.2B-Instruct** everywhere — one model, one prompt format, one set of quirks across all targets. Split models per platform only after measured latency/quality data justifies it.
+1. Model emits `run_code(...)`.
+2. `dispatch()` sees `requires_approval=True` → sets `AgentState.pending_approval`, loop halts.
+3. UI surfaces the pending call to the human.
+4. `resolve_approval(state, registry, approved=bool)` — only on `approved=True` does the Docker container / Pyodide worker actually run.
+
+`pending_approval` is non-null exactly when a `requires_approval` tool call is waiting. The loop refuses to `step()` again until `resolve_approval()` clears it.
+
+## Sandbox decisions (Phase 3)
+
+| Tool | Windows | Android | WebGPU |
+|---|---|---|---|
+| create_docx | python-docx | Apache POI (heavy — reconsider for v1) | docx.js |
+| create_pptx | python-pptx | Apache POI (heavy — reconsider for v1) | pptxgenjs |
+| run_code | **Docker** (docker-py, `--network none` + limits) | **None** (delegate to Windows or omit) | **Pyodide** (tab-sandboxed) |
+
+## Model selection (research doc §2)
+
+Start with **LFM2.5-1.2B-Instruct** everywhere — one model, one prompt format, one set of quirks across all targets. Split models per platform only after measured data justifies it.
 
 | Model | Target | Notes |
 |---|---|---|
@@ -102,4 +143,4 @@ Start with **LFM2.5-1.2B-Instruct** everywhere — one model, one prompt format,
 
 ## Protocol decision
 
-LFM2.5 emits Pythonic calls (`func(arg="value")`) by default. This project forces **JSON-shaped calls** via the system-prompt instruction in the core prompt builder, so the single portable parser only ever handles JSON. On Windows, `--jinja` handles parsing natively; the parser covers raw paths (WebGPU, fallbacks).
+LFM2.5 emits native **Pythonic** calls (`func(arg="value")`) between the sentinel tokens. `core/parser.py` uses Python's `ast` module to extract them safely (no eval). On Windows, `--jinja` handles parsing natively; the parser covers raw paths (WebGPU, fallbacks).

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-core.local/schemas/chat_message.schema.json",
+  "title": "ChatMessage",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["role", "content"],
+  "properties": {
+    "role": { "enum": ["user", "assistant", "tool", "system"] },
+    "content": { "type": "string" },
+    "tool_call_id": { "type": ["string", "null"] },
+    "function_calls": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/toolCall" }
+    }
+  },
+  "$defs": {
+    "toolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "arguments"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "arguments": { "type": "object" }
+      }
+    }
+  }
+}

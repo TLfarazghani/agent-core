@@ -1,6 +1,6 @@
 # Benchmarks & Measurements
 
-Phase 7 output. The Windows path is **not** considered shipped until this file has real measured numbers. Per the research doc audit hooks, no Android/Web port and no second model before these gates pass.
+Output of the shipped gate (Phase 4). The Windows path is **not** considered shipped until this file has real measured numbers. Per the research doc audit hooks, no fourth target and no second model before these gates pass.
 
 ## Pinned versions
 
@@ -8,13 +8,15 @@ Record exact versions for reproducibility — ports must reproduce the same mode
 
 | Component | Version / ID | Downloaded (date) |
 |---|---|---|
-| llama.cpp binary | (e.g. `llama-b7075-bin-win-cuda-12.4-x64.zip`) | |
-| GGUF | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` / `lfm2.5-1.2b-instruct-q4_k_m.gguf` | |
+| llama.cpp binary | `llama-b10456-bin-win-cuda-12.4-x64.zip` | 2026-08-17 |
+| GGUF | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` / `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` (697MB) | 2026-08-17 |
 | Python | 3.13.5 | |
-| openai | | |
-| pydantic | | |
-| huggingface-hub | | |
-| pytest | | |
+| pydantic | 2.13.4 | |
+| openai | 3.1.0 (v3 API — orchestrator must target v3, not the research doc's v1 sample) | |
+| huggingface-hub | 1.27.0 (use `hf.exe` CLI, not `python -m huggingface_hub`) | |
+| pytest | 9.1.1 | |
+| jsonschema | 4.26.0 | 2026-08-17 |
+| Server smoke test | `LFM2.5-1.2B-Instruct` Q4_K_M @ `127.0.0.1:8001`, 32768 ctx — replied "hello world" | 2026-08-17 |
 
 ## Environment
 
@@ -32,29 +34,44 @@ Record exact versions for reproducibility — ports must reproduce the same mode
 | Plain chat, long prompt (~4k) | | | |
 | Agent turn with tool call | | | |
 
-Measurement method: llama-server exposes timings in its logs and via `/health` (or the token timings in server responses). Record both if available.
+Measurement method: llama-server exposes timings in its logs and via `/health`. Record both if available.
 
 ### 2. Tool-call accuracy
 
-Stub tools: `echo`, `get_time`, `fs_list_dir`, `fs_read_file`. N trials each.
+Tool set: `web_search`, `send_email`, `send_message`, `create_docx`, `create_pptx`, `run_code`. N trials each.
 
 | Tool | Trials | Correct calls | Correct args | Accuracy | Notes |
 |---|---|---|---|---|---|
-| echo | | | | | |
-| get_time | | | | | |
-| fs_list_dir | | | | | |
-| fs_read_file | | | | | |
+| web_search | | | | | |
+| send_email | | | | | |
+| send_message | | | | | |
+| create_docx | | | | | |
+| create_pptx | | | | | |
+| run_code | | | | | |
 
 Method: scripted prompts where the only correct action is the target tool with fixed arguments. Count: call made (`correct calls`), arguments exactly right (`correct args`).
 
-### 3. Loop behavior
+### 3. Loop + approval-gate behavior
 
 | Check | Result | Notes |
 |---|---|---|
-| Multi-turn tool chaining works | | e.g. list dir → read file |
+| Multi-turn tool chaining works | | e.g. search → compose → send |
 | Turn cap at `max_turns=8` fires | | |
 | No tool call → clean terminal answer | | |
 | Malformed tool call → graceful handling | | |
+| `run_code` sets `pending_approval`, loop halts | | |
+| `resolve_approval(approved=False)` clears without executing | | |
+| `resolve_approval(approved=True)` runs the sandbox | | |
+| Sandbox limits (`--network none`, memory/cpu, timeout) enforced | | |
+
+### 4. run_code sandbox (Windows, Docker)
+
+| Check | Result | Notes |
+|---|---|---|
+| Python / JS / bash images run | | |
+| No network by default | | |
+| Timeout kills runaway code | | |
+| Memory/cpu limits hold | | |
 
 ## Gate decision
 
@@ -62,5 +79,6 @@ Record the verdict here once numbers are in:
 
 - [ ] tok/s acceptable for target use (define the bar before measuring)
 - [ ] Tool-call accuracy ≥ (define the bar before measuring)
-- [ ] All contracts schema-enforced (verified in pytest)
+- [ ] All contracts schema-enforced (verified in `test_smoke.py`)
+- [ ] Approval gate verified end-to-end
 - [ ] **Windows path SHIPPED** — Android/Web ports may begin

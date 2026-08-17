@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-core.local/schemas/agent_state.schema.json",
+  "title": "AgentState",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "session_id",
+    "target",
+    "model",
+    "messages",
+    "max_turns",
+    "turn_count",
+    "pending_approval"
+  ],
+  "properties": {
+    "session_id": { "type": "string" },
+    "target": { "enum": ["windows", "android", "webgpu"] },
+    "model": { "type": "string" },
+    "messages": {
+      "type": "array",
+      "items": { "$ref": "chat_message.schema.json" }
+    },
+    "max_turns": { "type": "integer", "minimum": 1, "default": 8 },
+    "turn_count": { "type": "integer", "minimum": 0, "default": 0 },
+    "pending_approval": {
+      "type": ["object", "null"],
+      "required": ["call_id", "tool_name", "arguments"],
+      "properties": {
+        "call_id": { "type": "string" },
+        "tool_name": { "type": "string" },
+        "arguments": { "type": "object" }
+      }
+    }
+  }
+}
