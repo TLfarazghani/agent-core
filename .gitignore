@@ -8,6 +8,7 @@ __pycache__/
 # Runtime artifacts
 models/
 vendor/
+output/
 *.gguf
 
 # Editors / OS

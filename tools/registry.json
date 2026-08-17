@@ -65,5 +65,51 @@
       },
       "required": ["channel", "to", "text"]
     }
+  },
+  {
+    "name": "create_docx",
+    "description": "Create a .docx document from a title and a list of sections.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "heading": { "type": "string" },
+              "body": { "type": "string" }
+            },
+            "required": ["heading", "body"]
+          }
+        }
+      },
+      "required": ["title", "sections"]
+    }
+  },
+  {
+    "name": "create_pptx",
+    "description": "Create a .pptx presentation from a title and a list of slides.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "slides": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "bullets": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["title", "bullets"]
+          }
+        }
+      },
+      "required": ["title", "slides"]
+    }
   }
 ]

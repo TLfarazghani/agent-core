@@ -70,12 +70,13 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 
 ## Phase 2 — Local doc-gen (per-platform backends)
 
-- [ ] `tools/create_docx.py` — `create_docx(title, sections)` via python-docx
-- [ ] `tools/create_pptx.py` — `create_pptx(title, slides)` via python-pptx
-- [ ] Backends: Windows python-docx/python-pptx; Web docx.js/pptxgenjs; Android Apache POI (heavy — reconsider for v1)
-- [ ] Tool tests (file produced, opens, content matches)
+- [x] `tools/create_docx.py` — `create_docx(title, sections)` via python-docx (writes to output dir, unique filenames)
+- [x] `tools/create_pptx.py` — `create_pptx(title, slides)` via python-pptx
+- [x] `tools/_paths.py` — shared output-dir / slug / unique-filename helpers
+- [x] Backends: Windows python-docx/python-pptx; Web docx.js/pptxgenjs; Android Apache POI (heavy — reconsider for v1)
+- [x] Tool tests (`test_docgen_tools.py` — writes real files to temp dir, reopens and verifies content)
 
-**Gate:** generated .docx/.pptx validate; tools registered and dispatched.
+**Gate:** generated .docx/.pptx validate; tools registered and dispatched. **PASSED 2026-08-17** (6/6).
 
 ## Phase 3 — Code execution + sandbox (highest risk)
 

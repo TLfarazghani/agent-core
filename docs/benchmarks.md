@@ -16,6 +16,8 @@ Record exact versions for reproducibility — ports must reproduce the same mode
 | huggingface-hub | 1.27.0 (use `hf.exe` CLI, not `python -m huggingface_hub`) | |
 | pytest | 9.1.1 | |
 | jsonschema | 4.26.0 | 2026-08-17 |
+| python-docx | 1.2.0 | 2026-08-17 |
+| python-pptx | 1.0.2 | 2026-08-17 |
 | Server smoke test | `LFM2.5-1.2B-Instruct` Q4_K_M @ `127.0.0.1:8001`, 32768 ctx — replied "hello world" | 2026-08-17 |
 
 ## Environment
