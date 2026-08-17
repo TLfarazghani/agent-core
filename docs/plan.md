@@ -99,13 +99,17 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 
 ## Phase 4 — Full cross-platform parity
 
-- [ ] `windows/orchestrator.py` — wraps core with OpenAI client (llama.cpp `--jinja`)
-- [ ] `windows/run_code` docker handler wired
-- [ ] `android/AgentCore.kt` — Kotlin port of core control flow (ported, not reinvented)
-- [ ] `web/worker.js` + `web/parser.js` — line-for-line port of `core/parser.py`
-- [ ] Measure tok/s + tool-call accuracy; record in `docs/benchmarks.md`
+- [x] `windows/orchestrator.py` — wraps core with OpenAI v3 client (llama.cpp `--jinja`); maps camelCase `tool_calls` → snake_case `function_calls`; streaming + usage capture (`stream_options.include_usage`)
+- [x] `cli.py` — REPL per `docs/ui-ux-design.md`: streaming text, tool cards, `[y/N]` approval prompt (default N), `/new /resume /tools /approve /reject /quit`, session persistence to `~/.agent-core/sessions/`, cp1252-safe when piped
+- [x] `test_orchestrator.py` — 9 unit tests (message mapping, tools wrapping, malformed-args degradation) with a stubbed client; no server needed
+- [x] Real E2E on llama-server: `run_code` tool call → approval gate → Docker `print(7)` → `7` → final answer
+- [ ] `android/AgentCore.kt` — Kotlin port of core control flow (ported, not reinvented) — deferred, gate passed
+- [ ] `web/worker.js` + `web/parser.js` — line-for-line port of `core/parser.py` — deferred, gate passed
+- [x] Measure tok/s + tool-call accuracy; record in `docs/benchmarks.md` (see below)
 
-**Gate:** Windows path shipped and measured. Per research doc §7, no fourth target / second model before this gate.
+**Measurements (2026-08-17):** ~215 tok/s mean (RTX 4060 Ti, Q4_K_M); tool-call accuracy **15/18 = 83%** (100% on well-specified prompts, deterministic failure on under-specified ones). Full tables in `docs/benchmarks.md`.
+
+**Gate:** Windows path shipped and measured. Per research doc §7, no fourth target / second model before this gate. **PASSED 2026-08-17** — Android/Web ports may begin.
 
 ## Out of scope until shipped gate
 

@@ -62,15 +62,16 @@ agent-core/
     tool_registry.py       # schema validation on register(), approval gate in dispatch()
     loop.py                # step() / resolve_approval(), platform-agnostic
   tools/                   # real tool handlers
-    registry.json          # all tool definitions (echo, run_code, networked, doc-gen later)
+    registry.json          # all tool definitions (echo, run_code, networked, doc-gen)
     remote.py              # McpClient — stdlib JSON-RPC MCP tools/call transport (portable)
-    __init__.py            # register_networked_tools(): binds web_search/send_email/send_message
-    # Phase 2: create_docx.py, create_pptx.py (local compute, python-docx/pptx)
-    # Phase 3: run_code.py (requires_approval always true, hardcoded)
+    __init__.py            # register_networked_tools / register_docgen_tools / register_runcode_tool
+    create_docx.py         # python-docx handler (Phase 2)
+    create_pptx.py         # python-pptx handler (Phase 2)
+    run_code.py            # Docker sandbox handler, watchdog timeout (Phase 3)
   windows/                 # Windows transport (llama.cpp) — Phase 4
     server_config.ps1      # llama-server launch params
-    orchestrator.py        # imports core.loop, wraps OpenAI client
-    run_code.py            # docker-py sandbox handler
+    orchestrator.py        # LlamaCppProvider: AgentState → OpenAI v3 request → ChatMessage
+  cli.py                   # REPL: renders AgentState, streams text, resolves approvals
   android/                 # planned port — structure reserved
     AgentCore.kt           # Kotlin port of core/ control flow
   web/                     # planned port — structure reserved
@@ -78,7 +79,11 @@ agent-core/
     parser.js              # line-for-line port of core/parser.py
     run_code.js            # Pyodide worker
   test_smoke.py            # Phase 0 smoke test (approval gate proof)
-  requirements.txt         # pydantic, jsonschema
+  test_networked_tools.py  # Phase 1 (stdlib mock MCP-remote)
+  test_docgen_tools.py     # Phase 2 (real .docx/.pptx round-trip)
+  test_runcode.py          # Phase 3 (fake docker client)
+  test_orchestrator.py     # Phase 4 (stubbed OpenAI client)
+  requirements.txt         # pydantic, jsonschema, python-docx, python-pptx, docker, openai
   docs/                    # this documentation set
   models/                  # GGUF weights (gitignored)
   vendor/                  # llama.cpp binaries (gitignored)

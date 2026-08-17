@@ -15,8 +15,8 @@ Design spec for the agent-core surfaces: the interactive CLI (current), the Web 
 
 | Surface | Status | Primary interactions |
 |---|---|---|
-| **CLI (Windows)** | Phase 0-ready; `cli.py` in build | REPL, streaming text, tool-call cards as text, approval prompt |
-| **Web UI** | Planned (with WebGPU port, Phase 4) | Full chat canvas, tool-call cards, approval modal, session list |
+| **CLI (Windows)** | **Shipped 2026-08-17** (`cli.py`) | REPL, streaming text, tool-call cards as text, approval prompt |
+| **Web UI** | Planned (with WebGPU port) | Full chat canvas, tool-call cards, approval modal, session list |
 | **Android** | Planned port | Chat view, notification-style approvals, no `run_code` |
 
 All three render the same state. This spec defines the Web UI as the reference; CLI and Android are constrained simplifications of it.

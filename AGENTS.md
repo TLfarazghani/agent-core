@@ -5,8 +5,8 @@ description: Core rules, architecture, and commands for AI agents working in thi
 
 # Project Overview
 - **agent-core** — a transport-agnostic agent core for local LFM2.5 inference (Windows first, Android/WebGPU planned). General-purpose "JARVIS" assistant: search, email, messaging, docx/pptx, code execution.
-- **Built:** Phase 0 core (`core/`), JSON Schemas (`schemas/`), `test_smoke.py`, `windows/server_config.ps1`; Phase 1 networked tools (`tools/remote.py` MCP-client + `tools/__init__.py` handlers + `test_networked_tools.py`); Phase 2 doc-gen (`tools/create_docx.py`, `tools/create_pptx.py`, `tools/_paths.py`, `test_docgen_tools.py`); Phase 3 run_code Docker sandbox (`tools/run_code.py`, `test_runcode.py`).
-- **NOT built yet:** `cli.py`, `windows/orchestrator.py`, Web (Pyodide) / Android run_code. Do not run or reference `python -m cli`.
+- **Built:** Phase 0 core (`core/`), JSON Schemas (`schemas/`), `test_smoke.py`, `windows/server_config.ps1`; Phase 1 networked tools (`tools/remote.py` MCP-client + `tools/__init__.py` handlers + `test_networked_tools.py`); Phase 2 doc-gen (`tools/create_docx.py`, `tools/create_pptx.py`, `tools/_paths.py`, `test_docgen_tools.py`); Phase 3 run_code Docker sandbox (`tools/run_code.py`, `test_runcode.py`); **Phase 4 (gate PASSED 2026-08-17)** `windows/orchestrator.py` (llama.cpp OpenAI v3 adapter, streaming), `cli.py` REPL, `test_orchestrator.py`.
+- **NOT built yet:** Web (`web/worker.js`, `web/parser.js`, Pyodide run_code) and Android (`android/AgentCore.kt`) ports — now unblocked by the shipped gate. Networked MCP tools are opt-in at CLI startup via `MCP_BASE_URL` env.
 - Design decisions and phased plan: `docs/plan.md`, `docs/architecture.md`, `docs/data-contracts.md`, `docs/ui-ux-design.md`.
 
 # Essential Commands (run from repo root; always use the venv interpreter)
@@ -17,6 +17,7 @@ description: Core rules, architecture, and commands for AI agents working in thi
   - huggingface-hub 1.x has **no `python -m huggingface_hub` module**; use `hf.exe`/`huggingface-cli.exe` in `.venv\Scripts`.
   - GGUF filename is capitalized `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` — the lowercase name in Liquid docs is stale.
 - **Start server:** `.\windows\server_config.ps1` (serves `127.0.0.1:8001`, model `LFM2.5-1.2B-Instruct`)
+- **Run the agent:** `.venv\Scripts\python cli.py` (needs llama-server up + Docker Desktop for `run_code`). `MCP_BASE_URL` env opts in the networked tools.
 
 # Architecture (non-obvious, do not violate)
 - The loop, tool registry, state machine, and **approval gate** live in `core/` and are transport-agnostic. Platform code only adapts `AgentState → provider request` / `response → ToolCall[]`; it never re-implements the loop. UIs render `AgentState` and resolve approvals — see `docs/ui-ux-design.md`.
@@ -37,6 +38,7 @@ description: Core rules, architecture, and commands for AI agents working in thi
 - `test_networked_tools.py` (Phase 1) runs the same way and spins up a stdlib `http.server` mock MCP-remote — no real network, no external services.
 - `test_docgen_tools.py` (Phase 2) writes real .docx/.pptx to a `tempfile` dir and reopens them with python-docx/python-pptx to verify content. Output dir defaults to `output/` (override `AGENT_CORE_OUTPUT_DIR`); it is gitignored via `output/` — check `.gitignore` if you add generated artifacts.
 - `test_runcode.py` (Phase 3) uses a **fake docker client** — no daemon needed. `tools/run_code.py` has an injectable `client` param; never change it to construct `docker.from_env()` at import time. Timeout uses a watchdog thread that kills the container.
+- `test_orchestrator.py` (Phase 4) stubs the OpenAI client — no server needed. Do not import `windows.orchestrator` without `openai` installed (it's in requirements).
 - **run_code needs Docker Desktop running** for real use (`docker info` must succeed). The Python sandbox also needs the `python:3.12-slim` image pulled on first use (same for `node:20-slim`, `bash:5`).
 - Each test file filters `tools/registry.json` to its own tools via `load_json(..., names={...})`. Adding a tool to `registry.json` will break other suites unless they pass `names=`.
 - No `tests/` package and no pytest config exist — don't invent one unless a phase needs it.
