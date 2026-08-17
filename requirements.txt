@@ -2,3 +2,4 @@ pydantic>=2.13
 jsonschema>=4.23
 python-docx>=1.2
 python-pptx>=1.0
+docker>=7.2

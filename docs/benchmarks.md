@@ -18,6 +18,8 @@ Record exact versions for reproducibility — ports must reproduce the same mode
 | jsonschema | 4.26.0 | 2026-08-17 |
 | python-docx | 1.2.0 | 2026-08-17 |
 | python-pptx | 1.0.2 | 2026-08-17 |
+| docker-py | 7.2.0 | 2026-08-17 |
+| Docker engine | 28.5.1 (desktop-linux) | verified 2026-08-17 |
 | Server smoke test | `LFM2.5-1.2B-Instruct` Q4_K_M @ `127.0.0.1:8001`, 32768 ctx — replied "hello world" | 2026-08-17 |
 
 ## Environment
@@ -70,10 +72,10 @@ Method: scripted prompts where the only correct action is the target tool with f
 
 | Check | Result | Notes |
 |---|---|---|
-| Python / JS / bash images run | | |
-| No network by default | | |
-| Timeout kills runaway code | | |
-| Memory/cpu limits hold | | |
+| Python / JS / bash images run | **PASS** | python `print(2+2)` → `4`; bash `echo` + `uname` OK (2026-08-17) |
+| No network by default | **PASS** | outbound socket to 1.1.1.1:80 → `NETWORK: OFF` |
+| Timeout kills runaway code | **PASS** | `sleep 300` killed by watchdog at timeout, container removed |
+| Memory/cpu limits hold | PASS (flags asserted in unit tests) | `mem_limit=256m`, `nano_cpus=0.5` verified against fake client; real load not measured |
 
 ## Gate decision
 

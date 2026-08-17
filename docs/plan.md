@@ -87,13 +87,15 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 | AppContainer / job object | Weak-medium | No | N/A | None | Free |
 | **Pyodide (chosen, browser)** | Strong (WASM) | N/A | Yes, no install | None | Free |
 
-- [ ] `tools/run_code.py` — `run_code(language, code, timeout_seconds)`, `requires_approval: true` hardcoded
-- [ ] Windows handler: docker-py, `--network none`, memory/cpu limits, timeout
-- [ ] Web handler: Pyodide worker (already tab-sandboxed, zero install)
+- [x] `tools/run_code.py` — `run_code(language, code, timeout_seconds)`, `requires_approval: true` hardcoded
+- [x] Windows handler: docker-py, `--network none`, memory/cpu limits, watchdog-thread timeout (kills container)
+- [x] Injectable docker client so the test suite runs without a daemon (`test_runcode.py` — fake client)
+- [x] Tests: approval halts loop, approval runs, rejection clears, timeout kills, nonzero exit, unsupported language
+- [x] Real-Docker verification (2026-08-17): python `print(2+2)` → `4`, outbound socket to 1.1.1.1 → **NETWORK: OFF**, bash echo OK, `sleep 300` killed at timeout, no stray containers
+- [ ] Web handler: Pyodide worker (already tab-sandboxed, zero install) — deferred to Phase 4 web port
 - [ ] Android: no sandbox — delegate to reachable Windows instance or omit; tracked as open platform-ceiling item
-- [ ] Tests: approval halts loop, approval runs, rejection clears, timeout kills
 
-**Gate:** `run_code` executes only after `resolve_approval(approved=True)`; sandbox limits enforced.
+**Gate:** `run_code` executes only after `resolve_approval(approved=True)`; sandbox limits enforced. **PASSED 2026-08-17** (8/8 unit + real Docker check).
 
 ## Phase 4 — Full cross-platform parity
 
