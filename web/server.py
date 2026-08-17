@@ -149,6 +149,12 @@ class AgentApp:
         self._sessions.pop(session_id, None)
         return delete_session(session_id)
 
+    def _save_best_effort(self, state: AgentState) -> None:
+        try:
+            save_session(state)
+        except Exception:  # noqa: BLE001 - never mask the original turn error
+            pass
+
     def run_turn(self, session_id: str, out: SSEWriter) -> None:
         """Drive the loop, streaming events, until terminal / approval / cap."""
         with self._lock_for(session_id):
@@ -175,6 +181,7 @@ class AgentApp:
                 return
             if state.turn_count >= state.max_turns:
                 out.event("error", {"message": "Turn budget reached. Start a new session."})
+                self._save_best_effort(state)
                 return
             last = state.messages[-1] if state.messages else None
             if last is not None and last.role == "assistant" and not last.function_calls:
@@ -186,9 +193,11 @@ class AgentApp:
                 step(state, provider, self.registry)
             except MaxTurnsError:
                 out.event("error", {"message": "Turn budget reached. Start a new session."})
+                self._save_best_effort(state)
                 return
             except Exception as exc:  # noqa: BLE001 - surface to the UI
                 out.event("error", {"message": f"error: {type(exc).__name__}: {exc}"})
+                self._save_best_effort(state)
                 return
             for message in state.messages[before:]:
                 if message.role == "assistant" and message.function_calls:

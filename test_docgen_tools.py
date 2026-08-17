@@ -100,16 +100,52 @@ def test_missing_required_argument_rejected() -> None:
         assert "invalid arguments" in msg.content
 
 
-def test_invalid_section_shape_rejected() -> None:
+def test_section_without_body_is_accepted() -> None:
+    """body/bullets are optional now: a heading alone builds an empty section."""
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = _registry(Path(tmp))
+        msg = _dispatch(registry, "create_docx", {"title": "T", "sections": [{"heading": "H"}]})
+        assert msg is not None and msg.role == "tool"
+        assert not msg.content.startswith("error")
+        doc = Document(msg.content)
+        assert any(p.text == "H" for p in doc.paragraphs)
+
+
+def test_single_object_sections_accepted() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = _registry(Path(tmp))
+        msg = _dispatch(
+            registry, "create_docx", {"title": "T", "sections": {"heading": "H", "body": "B"}}
+        )
+        assert msg is not None and msg.role == "tool"
+        assert not msg.content.startswith("error")
+
+
+def test_bullets_as_string_accepted() -> None:
+    """1.2B models often emit bullets as one string instead of a list."""
     with tempfile.TemporaryDirectory() as tmp:
         registry = _registry(Path(tmp))
         msg = _dispatch(
             registry,
-            "create_docx",
-            {"title": "T", "sections": [{"heading": "H"}], },
+            "create_pptx",
+            {"title": "T", "slides": [{"title": "Intro", "bullets": "One\nTwo"}]},
         )
         assert msg is not None and msg.role == "tool"
-        assert "invalid arguments" in msg.content
+        assert not msg.content.startswith("error")
+        prs = Presentation(msg.content)
+        assert len(prs.slides) == 1
+
+
+def test_single_object_slides_accepted() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = _registry(Path(tmp))
+        msg = _dispatch(
+            registry,
+            "create_pptx",
+            {"title": "T", "slides": {"title": "Intro", "bullets": ["One"]}},
+        )
+        assert msg is not None and msg.role == "tool"
+        assert not msg.content.startswith("error")
 
 
 def test_registry_definitions_loaded() -> None:

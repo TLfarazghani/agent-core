@@ -19,12 +19,37 @@ TOOL_NAME = "create_pptx"
 _TITLE_AND_CONTENT_LAYOUT = 1
 
 
+def _as_bullet_list(value: Any) -> list[str]:
+    """Accept a string, a list of strings, or None; always return a list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+        return lines or [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _normalize_slides(slides: Any) -> list[dict[str, Any]]:
+    """Accept a single slide object or a list of them; fill missing fields."""
+    if isinstance(slides, dict):
+        slides = [slides]
+    return [
+        {
+            "title": str(slide.get("title", "")),
+            "bullets": _as_bullet_list(slide.get("bullets")),
+        }
+        for slide in slides
+    ]
+
+
 def make_handler(output_dir: Path | None = None) -> Callable[[dict[str, Any]], str]:
     out_dir = output_dir or default_output_dir()
 
     def handler(arguments: dict[str, Any]) -> str:
         title = arguments["title"]
-        slides = arguments["slides"]
+        slides = _normalize_slides(arguments["slides"])
 
         prs = Presentation()
         layout = prs.slide_layouts[_TITLE_AND_CONTENT_LAYOUT]

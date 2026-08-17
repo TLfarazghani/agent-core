@@ -17,12 +17,31 @@ from ._paths import default_output_dir, slugify, unique_path
 TOOL_NAME = "create_docx"
 
 
+def _as_body_text(value: Any) -> str:
+    """Accept a string, a list of lines, or None; always return a string."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(str(item) for item in value)
+    return str(value)
+
+
+def _normalize_sections(sections: Any) -> list[dict[str, Any]]:
+    """Accept a single section object or a list of them; fill missing fields."""
+    if isinstance(sections, dict):
+        sections = [sections]
+    return [
+        {"heading": str(section.get("heading", "")), "body": _as_body_text(section.get("body"))}
+        for section in sections
+    ]
+
+
 def make_handler(output_dir: Path | None = None) -> Callable[[dict[str, Any]], str]:
     out_dir = output_dir or default_output_dir()
 
     def handler(arguments: dict[str, Any]) -> str:
         title = arguments["title"]
-        sections = arguments["sections"]
+        sections = _normalize_sections(arguments["sections"])
 
         doc = Document()
         doc.add_heading(title, level=0)

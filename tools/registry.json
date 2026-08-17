@@ -75,15 +75,37 @@
       "properties": {
         "title": { "type": "string" },
         "sections": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "heading": { "type": "string" },
-              "body": { "type": "string" }
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "heading": { "type": "string" },
+                  "body": {
+                    "anyOf": [
+                      { "type": "string" },
+                      { "type": "array", "items": { "type": "string" } }
+                    ]
+                  }
+                },
+                "required": ["heading"]
+              }
             },
-            "required": ["heading", "body"]
-          }
+            {
+              "type": "object",
+              "properties": {
+                "heading": { "type": "string" },
+                "body": {
+                  "anyOf": [
+                    { "type": "string" },
+                    { "type": "array", "items": { "type": "string" } }
+                  ]
+                }
+              },
+              "required": ["heading"]
+            }
+          ]
         }
       },
       "required": ["title", "sections"]
@@ -98,15 +120,37 @@
       "properties": {
         "title": { "type": "string" },
         "slides": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "title": { "type": "string" },
-              "bullets": { "type": "array", "items": { "type": "string" } }
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "title": { "type": "string" },
+                  "bullets": {
+                    "anyOf": [
+                      { "type": "array", "items": { "type": "string" } },
+                      { "type": "string" }
+                    ]
+                  }
+                },
+                "required": ["title"]
+              }
             },
-            "required": ["title", "bullets"]
-          }
+            {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "bullets": {
+                  "anyOf": [
+                    { "type": "array", "items": { "type": "string" } },
+                    { "type": "string" }
+                  ]
+                }
+              },
+              "required": ["title"]
+            }
+          ]
         }
       },
       "required": ["title", "slides"]
