@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>agent-core</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <button id="new-session" class="btn btn-primary">+ New session</button>
+      <ul id="session-list"></ul>
+      <div id="model-status"><span class="dot dot-off"></span> checking model…</div>
+    </aside>
+
+    <main id="chat">
+      <div id="messages"></div>
+
+      <div id="approval-modal" class="modal" hidden>
+        <div class="modal-card">
+          <div class="modal-title">Pending approval</div>
+          <div class="modal-tool" id="approval-tool">tool</div>
+          <pre class="modal-args mono" id="approval-args"></pre>
+          <div class="modal-actions">
+            <button id="approve-btn" class="btn btn-approve">Approve</button>
+            <button id="reject-btn" class="btn">Reject</button>
+          </div>
+          <div class="modal-hint mono">a = approve · r = reject · Esc = reject</div>
+        </div>
+      </div>
+
+      <div id="composer">
+        <span id="turn-counter" class="mono"></span>
+        <input id="input" type="text" placeholder="Message…  (/stop to interrupt)" autocomplete="off" />
+        <button id="send-btn" class="btn btn-primary">Send</button>
+      </div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -9,17 +9,15 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
 import urllib.request
-from pathlib import Path
 
-from core import AgentState, ChatMessage, new_state, resolve_approval, user_message
+from core import AgentState, ChatMessage, resolve_approval, user_message
 from core.loop import MaxTurnsError
+from core.sessions import SESSION_DIR, load_session, new_agent_state, save_session
 from core.tool_registry import ToolRegistry
 
 from windows.orchestrator import DEFAULT_BASE_URL, LlamaCppProvider, default_registry
 
-SESSION_DIR = Path.home() / ".agent-core" / "sessions"
 HEALTH_URL = DEFAULT_BASE_URL.removesuffix("/v1") + "/health"
 
 _IS_TTY = sys.stdout.isatty() and sys.stdin.isatty()
@@ -78,18 +76,6 @@ def check_server() -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-
-
-def save_session(state: AgentState) -> Path:
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    path = SESSION_DIR / f"{state.session_id}.json"
-    path.write_text(state.model_dump_json(indent=2), encoding="utf-8")
-    return path
-
-
-def load_session(session_id: str) -> AgentState:
-    path = SESSION_DIR / f"{session_id}.json"
-    return AgentState.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def render_plain_message(message: ChatMessage) -> None:
@@ -174,6 +160,10 @@ def print_tools(registry: ToolRegistry) -> None:
     print(_dim("  (web_search / send_email / send_message need MCP_BASE_URL set)"))
 
 
+def new_agent() -> AgentState:
+    return new_agent_state()
+
+
 def main() -> int:
     check_server()
 
@@ -185,7 +175,7 @@ def main() -> int:
         register_networked_tools(registry, base_url=mcp_base, api_key=os.environ.get("MCP_API_KEY"))
 
     provider = LlamaCppProvider(registry=registry, stream=True)
-    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    state = new_agent()
     print_header(state)
     print(_dim("  local agent - /help for commands - Ctrl-C stops generation"))
     if not _IS_TTY:
@@ -210,7 +200,7 @@ def main() -> int:
             if command == "/quit":
                 break
             elif command == "/new":
-                state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+                state = new_agent()
                 rendered = 0
                 print_header(state)
             elif command == "/resume":

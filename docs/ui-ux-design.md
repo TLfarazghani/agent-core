@@ -16,7 +16,7 @@ Design spec for the agent-core surfaces: the interactive CLI (current), the Web 
 | Surface | Status | Primary interactions |
 |---|---|---|
 | **CLI (Windows)** | **Shipped 2026-08-17** (`cli.py`) | REPL, streaming text, tool-call cards as text, approval prompt |
-| **Web UI** | Planned (with WebGPU port) | Full chat canvas, tool-call cards, approval modal, session list |
+| **Web UI** | **Shipped v1 2026-08-17** (`web/`) | Chat canvas, streaming text, tool-call cards, approval modal, session sidebar, model status |
 | **Android** | Planned port | Chat view, notification-style approvals, no `run_code` |
 
 All three render the same state. This spec defines the Web UI as the reference; CLI and Android are constrained simplifications of it.
@@ -82,6 +82,8 @@ $ agent
 ---
 
 ## 2. Web UI (reference design)
+
+> **v1 status (2026-08-17):** implemented as a vanilla SPA (`web/index.html`, `web/style.css`, `web/app.js`) served by `web/server.py` (stdlib `ThreadingHTTPServer`, SSE streaming over `POST`). It reuses the CLI's session store (`core/sessions.py`, `~/.agent-core/sessions/`). The model is local llama-server via `windows/orchestrator.py`; in-browser WebGPU is a later, separate step.
 
 ### 2.1 Layout
 

@@ -103,8 +103,11 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 - [x] `cli.py` — REPL per `docs/ui-ux-design.md`: streaming text, tool cards, `[y/N]` approval prompt (default N), `/new /resume /tools /approve /reject /quit`, session persistence to `~/.agent-core/sessions/`, cp1252-safe when piped
 - [x] `test_orchestrator.py` — 9 unit tests (message mapping, tools wrapping, malformed-args degradation) with a stubbed client; no server needed
 - [x] Real E2E on llama-server: `run_code` tool call → approval gate → Docker `print(7)` → `7` → final answer
+- [x] **Web UI (v1)** — `web/server.py` (stdlib `ThreadingHTTPServer` + SSE: `token`/`tool_call`/`tool_result`/`approval`/`done` events; endpoints for sessions/tools/health/approve/reject), `web/index.html` + `style.css` + `app.js` (vanilla SPA: chat canvas, tool cards, approval modal with `a`/`r`/Esc keys, session sidebar, model status), `test_web.py` (8 tests, fake provider, no llama needed). Verified live: real model streams tokens; run_code → approval → Docker `99` → streaming reply.
+- [x] `Core-agent.bat` — one-click launcher: starts llama-server if down, checks Docker, starts web UI, opens browser
+- [ ] in-browser model (WebGPU / Transformers.js + Pyodide `run_code`) — deferred; web UI currently drives local llama-server
 - [ ] `android/AgentCore.kt` — Kotlin port of core control flow (ported, not reinvented) — deferred, gate passed
-- [ ] `web/worker.js` + `web/parser.js` — line-for-line port of `core/parser.py` — deferred, gate passed
+- [ ] `web/worker.js` + `web/parser.js` — line-for-line port of `core/parser.py` — deferred, gate passed (raw-path fallback)
 - [x] Measure tok/s + tool-call accuracy; record in `docs/benchmarks.md` (see below)
 
 **Measurements (2026-08-17):** ~215 tok/s mean (RTX 4060 Ti, Q4_K_M); tool-call accuracy **15/18 = 83%** (100% on well-specified prompts, deterministic failure on under-specified ones). Full tables in `docs/benchmarks.md`.

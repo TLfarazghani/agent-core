@@ -72,17 +72,21 @@ agent-core/
     server_config.ps1      # llama-server launch params
     orchestrator.py        # LlamaCppProvider: AgentState → OpenAI v3 request → ChatMessage
   cli.py                   # REPL: renders AgentState, streams text, resolves approvals
+  Core-agent.bat           # one-click launcher: llama-server + Docker check + web UI + browser
+  web/                     # Web UI + agent API server (stdlib only)
+    server.py              # ThreadingHTTPServer; SSE API (token/tool_call/approval/done); sessions
+    index.html             # SPA shell
+    style.css              # dark local-first theme (approval amber, tool gray)
+    app.js                 # renders AgentState, tool cards, approval modal, session sidebar
+  core/sessions.py         # shared session lifecycle: system prompt, save/load/list/delete
   android/                 # planned port — structure reserved
     AgentCore.kt           # Kotlin port of core/ control flow
-  web/                     # planned port — structure reserved
-    worker.js
-    parser.js              # line-for-line port of core/parser.py
-    run_code.js            # Pyodide worker
   test_smoke.py            # Phase 0 smoke test (approval gate proof)
   test_networked_tools.py  # Phase 1 (stdlib mock MCP-remote)
   test_docgen_tools.py     # Phase 2 (real .docx/.pptx round-trip)
   test_runcode.py          # Phase 3 (fake docker client)
   test_orchestrator.py     # Phase 4 (stubbed OpenAI client)
+  test_web.py              # Web UI (fake provider + ephemeral server)
   requirements.txt         # pydantic, jsonschema, python-docx, python-pptx, docker, openai
   docs/                    # this documentation set
   models/                  # GGUF weights (gitignored)

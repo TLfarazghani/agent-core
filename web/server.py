@@ -1,0 +1,391 @@
+"""Web UI + agent API server (stdlib only).
+
+Serves the vanilla JS single-page app from ``web/`` and exposes the agent over
+Server-Sent Events. Reuses ``core.loop`` + ``windows.orchestrator``; the browser
+never re-implements the loop, it only renders ``AgentState`` and resolves
+approvals.
+
+Run::
+
+    .\\venv\\Scripts\\python web\\server.py [port]      # default 127.0.0.1:8002
+
+Endpoints
+    GET  /                          -> index.html
+    GET  /app.js, /style.css        -> static assets
+    GET  /api/health                -> model server status
+    GET  /api/tools                 -> registered tool definitions
+    POST /api/sessions              -> create a session
+    GET  /api/sessions              -> list saved sessions
+    GET  /api/sessions/<id>         -> full AgentState
+    DELETE /api/sessions/<id>       -> delete a session
+    POST /api/sessions/<id>/messages  -> run a turn, streams SSE events
+    POST /api/sessions/<id>/approve   -> approve pending tool, streams SSE
+    POST /api/sessions/<id>/reject    -> reject pending tool, streams SSE
+
+SSE event types: ``token``, ``tool_call``, ``tool_result``, ``approval``,
+``error``, ``done`` (carries the full serialized AgentState).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any, Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from core import AgentState, user_message
+from core.loop import MaxTurnsError, resolve_approval, step
+from core.sessions import (
+    delete_session,
+    list_sessions,
+    load_session,
+    new_agent_state,
+    save_session,
+)
+from core.tool_registry import ToolRegistry
+
+from windows.orchestrator import (
+    DEFAULT_BASE_URL,
+    LlamaCppProvider,
+    default_registry,
+)
+
+_WEB_DIR = Path(__file__).resolve().parent
+_HEALTH_URL = DEFAULT_BASE_URL.removesuffix("/v1") + "/health"
+
+ProviderFactory = Callable[[Callable[[str], None]], Any]
+
+
+def default_health_check() -> bool:
+    try:
+        with urllib.request.urlopen(_HEALTH_URL, timeout=5) as response:
+            return response.status == 200
+    except Exception:  # noqa: BLE001 - any failure means the model server is down
+        return False
+
+
+def default_provider_factory(registry: ToolRegistry) -> ProviderFactory:
+    def factory(emit_token: Callable[[str], None]) -> Any:
+        return LlamaCppProvider(
+            registry=registry,
+            stream=True,
+            stream_callback=emit_token,
+        )
+
+    return factory
+
+
+class SSEWriter:
+    """Write one-shot Server-Sent Event responses over HTTP/1.0 (close-delimited)."""
+
+    def __init__(self, handler: BaseHTTPRequestHandler) -> None:
+        self.handler = handler
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        try:
+            handler.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
+    def event(self, event: str, data: dict[str, Any]) -> None:
+        self.handler.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8"))
+        self.handler.wfile.flush()
+
+    def close(self) -> None:
+        try:
+            self.handler.wfile.flush()
+        except OSError:
+            pass
+
+
+class AgentApp:
+    def __init__(
+        self,
+        registry: ToolRegistry | None = None,
+        provider_factory: ProviderFactory | None = None,
+        health_check: Callable[[], bool] | None = None,
+    ) -> None:
+        self.registry = registry or default_registry()
+        mcp_base = os.environ.get("MCP_BASE_URL")
+        if mcp_base:
+            from tools import register_networked_tools
+
+            register_networked_tools(
+                self.registry, base_url=mcp_base, api_key=os.environ.get("MCP_API_KEY")
+            )
+        self.provider_factory = provider_factory or default_provider_factory(self.registry)
+        self.health_check = health_check or default_health_check
+        self._sessions: dict[str, AgentState] = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._lock_guard = threading.Lock()
+
+    def _lock_for(self, session_id: str) -> threading.Lock:
+        with self._lock_guard:
+            return self._locks.setdefault(session_id, threading.Lock())
+
+    def get_session(self, session_id: str) -> AgentState:
+        state = self._sessions.get(session_id)
+        if state is None:
+            state = load_session(session_id)
+            self._sessions[session_id] = state
+        return state
+
+    def create_session(self) -> AgentState:
+        state = new_agent_state()
+        self._sessions[state.session_id] = state
+        return state
+
+    def delete_session(self, session_id: str) -> bool:
+        self._sessions.pop(session_id, None)
+        return delete_session(session_id)
+
+    def run_turn(self, session_id: str, out: SSEWriter) -> None:
+        """Drive the loop, streaming events, until terminal / approval / cap."""
+        with self._lock_for(session_id):
+            self._stream_turn(session_id, out)
+
+    def _stream_turn(self, session_id: str, out: SSEWriter) -> None:
+        """Run the loop to completion. Caller must hold the session lock."""
+        state = self.get_session(session_id)
+
+        def emit_token(text: str) -> None:
+            out.event("token", {"text": text})
+
+        provider = self.provider_factory(emit_token)
+        while True:
+            if state.pending_approval is not None:
+                out.event(
+                    "approval",
+                    {
+                        "call_id": state.pending_approval.call_id,
+                        "tool_name": state.pending_approval.tool_name,
+                        "arguments": state.pending_approval.arguments,
+                    },
+                )
+                return
+            if state.turn_count >= state.max_turns:
+                out.event("error", {"message": "Turn budget reached. Start a new session."})
+                return
+            last = state.messages[-1] if state.messages else None
+            if last is not None and last.role == "assistant" and not last.function_calls:
+                out.event("done", {"state": state.model_dump()})
+                save_session(state)
+                return
+            before = len(state.messages)
+            try:
+                step(state, provider, self.registry)
+            except MaxTurnsError:
+                out.event("error", {"message": "Turn budget reached. Start a new session."})
+                return
+            except Exception as exc:  # noqa: BLE001 - surface to the UI
+                out.event("error", {"message": f"error: {type(exc).__name__}: {exc}"})
+                return
+            for message in state.messages[before:]:
+                if message.role == "assistant" and message.function_calls:
+                    for call in message.function_calls:
+                        out.event(
+                            "tool_call",
+                            {"id": call.id, "name": call.name, "arguments": call.arguments},
+                        )
+                elif message.role == "tool":
+                    out.event(
+                        "tool_result",
+                        {
+                            "call_id": message.tool_call_id,
+                            "content": message.content,
+                            "error": message.content.startswith("error"),
+                        },
+                    )
+
+    def handle_approval(self, session_id: str, approved: bool, out: SSEWriter) -> None:
+        with self._lock_for(session_id):
+            state = self.get_session(session_id)
+            if state.pending_approval is not None:
+                resolve_approval(state, self.registry, approved=approved)
+                if approved and state.messages and state.messages[-1].role == "tool":
+                    result = state.messages[-1]
+                    out.event(
+                        "tool_result",
+                        {
+                            "call_id": result.tool_call_id,
+                            "content": result.content,
+                            "error": result.content.startswith("error"),
+                        },
+                    )
+            self._stream_turn(session_id, out)
+
+    def health(self) -> bool:
+        return self.health_check()
+
+
+class Handler(BaseHTTPRequestHandler):
+    app: AgentApp
+    server: ThreadingHTTPServer  # type: ignore[assignment]
+
+    protocol_version = "HTTP/1.0"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        pass
+
+    def _send_json(self, status: int, payload: Any) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def _serve_static(self, name: str) -> None:
+        path = (_WEB_DIR / name).resolve()
+        if _WEB_DIR not in path.parents:
+            self._send_json(403, {"error": "forbidden"})
+            return
+        if not path.is_file():
+            self._send_json(404, {"error": "not found"})
+            return
+        content_types = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".svg": "image/svg+xml",
+        }
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header(
+            "Content-Type", content_types.get(path.suffix, "application/octet-stream")
+        )
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self) -> None:  # noqa: N802 - http.server API
+        app: AgentApp = self.server.app
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            return self._serve_static("index.html")
+        if path in ("/app.js", "/style.css"):
+            return self._serve_static(path.lstrip("/"))
+        if path == "/api/health":
+            return self._send_json(200, {"ok": app.health(), "base_url": DEFAULT_BASE_URL})
+        if path == "/api/tools":
+            tools = [
+                {
+                    "name": d.name,
+                    "description": d.description,
+                    "requires_approval": d.requires_approval,
+                }
+                for d in app.registry.definitions()
+            ]
+            return self._send_json(200, {"tools": tools})
+        if path == "/api/sessions":
+            return self._send_json(200, {"sessions": list_sessions()})
+        if path.startswith("/api/sessions/") and not path.endswith("/messages"):
+            session_id = path.split("/")[-1]
+            if path.endswith("/approve") or path.endswith("/reject"):
+                return self._send_json(405, {"error": "POST only"})
+            try:
+                state = app.get_session(session_id)
+                return self._send_json(200, {"state": state.model_dump()})
+            except (FileNotFoundError, ValueError):
+                return self._send_json(404, {"error": "session not found"})
+        return self._send_json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server API
+        app: AgentApp = self.server.app
+        path = self.path.split("?", 1)[0]
+        if path == "/api/sessions":
+            state = app.create_session()
+            return self._send_json(200, {"session_id": state.session_id})
+        if path.startswith("/api/sessions/"):
+            parts = path.split("/")
+            session_id = parts[3]
+            action = parts[4] if len(parts) > 4 else None
+            try:
+                state = app.get_session(session_id)
+            except (FileNotFoundError, ValueError):
+                return self._send_json(404, {"error": "session not found"})
+            if action == "messages":
+                body = self._read_json()
+                state.messages.append(user_message(body.get("message", "")))
+                self._stream(path, app, session_id)
+                return
+            if action == "approve":
+                self._stream(path, app, session_id, approved=True)
+                return
+            if action == "reject":
+                self._stream(path, app, session_id, approved=False)
+                return
+        return self._send_json(404, {"error": "not found"})
+
+    def do_DELETE(self) -> None:  # noqa: N802 - http.server API
+        app: AgentApp = self.server.app
+        path = self.path.split("?", 1)[0]
+        if path.startswith("/api/sessions/"):
+            session_id = path.split("/")[-1]
+            deleted = app.delete_session(session_id)
+            return self._send_json(200 if deleted else 404, {"deleted": deleted})
+        return self._send_json(404, {"error": "not found"})
+
+    def _stream(
+        self,
+        path: str,
+        app: AgentApp,
+        session_id: str,
+        approved: bool | None = None,
+    ) -> None:
+        try:
+            out = SSEWriter(self)
+            if approved is None:
+                app.run_turn(session_id, out)
+            else:
+                app.handle_approval(session_id, approved, out)
+            out.close()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as exc:  # noqa: BLE001 - respond over SSE if possible
+            try:
+                out.event("error", {"message": f"error: {type(exc).__name__}: {exc}"})
+                out.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def make_server(app: AgentApp, port: int = 8002) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.app = app
+    return server
+
+
+def main() -> int:
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8002
+    app = AgentApp()
+    server = make_server(app, port)
+    url = f"http://127.0.0.1:{port}"
+    print(f"agent-core web UI at {url}  (llama-server at {DEFAULT_BASE_URL})")
+    print(f"model status: {'online' if app.health() else 'OFFLINE - start .\\windows\\server_config.ps1'}")
+    print("press Ctrl-C to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
