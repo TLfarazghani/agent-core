@@ -167,6 +167,41 @@ def test_static_serves_index() -> None:
         server.stop()
 
 
+def test_static_serves_module_worker_assets() -> None:
+    """The in-browser WebGPU path loads worker.js as a module worker, which
+    then imports engine.js and parser.js -- all three must be served, or the
+    worker fails with a silent load error."""
+    server = _TestServer()
+    try:
+        for name in ("worker.js", "engine.js", "parser.js", "app.js"):
+            with urllib.request.urlopen(server.url("/" + name), timeout=10) as resp:
+                assert resp.status == 200, name
+                assert "text/javascript" in resp.headers["Content-Type"], name
+                body = resp.read().decode("utf-8")
+                assert body.strip(), name
+    finally:
+        server.stop()
+
+
+def test_models_route_forbids_traversal_and_404s_missing() -> None:
+    """/models/ maps to the repo models/ dir for the in-browser model path;
+    must not traverse out and must 404 when the ONNX model is absent."""
+    server = _TestServer()
+    try:
+        try:
+            urllib.request.urlopen(server.url("/models/../../../etc/passwd"), timeout=10)
+            raise AssertionError("traversal should not succeed")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403, exc.code
+        try:
+            urllib.request.urlopen(server.url("/models/LFM2.5-1.2B-Instruct-ONNX/onnx_model_q4.onnx"), timeout=10)
+            raise AssertionError("missing model should 404")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404, exc.code
+    finally:
+        server.stop()
+
+
 def test_tools_listed() -> None:
     server = _TestServer()
     try:
@@ -348,6 +383,96 @@ def test_delete_session() -> None:
             assert exc.code == 404
     finally:
         server.stop()
+
+
+def _start_web_server(registry: ToolRegistry) -> tuple[Any, threading.Thread]:
+    server = make_server(AgentApp(registry=registry, health_check=lambda: True), 0)
+    server.block_on_close = True
+    server.port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _get_json(url: str) -> Any:
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def test_api_search_proxy_returns_results() -> None:
+    registry = ToolRegistry()
+    from tools import register_web_tools
+
+    class FakePage:
+        def __init__(self, text: str) -> None:
+            self._text = text.encode("utf-8")
+
+        def read(self, *args: Any) -> bytes:
+            return self._text
+
+        def __enter__(self) -> "FakePage":
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+    class FakeUrlopen:
+        def __call__(self, request: Any, timeout: int) -> FakePage:
+            assert request.full_url.startswith("https://html.duckduckgo.com/html/")
+            return FakePage(
+                '<a class="result__a" href="https://example.com">Example</a>'
+                '<a class="result__snippet" href="https://example.com">A snippet.</a>'
+            )
+
+    register_web_tools(registry, urlopen=FakeUrlopen())
+    server, thread = _start_web_server(registry)
+    try:
+        payload = _retry_transport(
+            _get_json, f"http://127.0.0.1:{server.port}/api/search?q=example"
+        )
+        assert "Example" in payload["result"]
+        assert "A snippet." in payload["result"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_api_fetch_proxy_strips_html() -> None:
+    registry = ToolRegistry()
+    from tools import register_web_tools
+
+    class FakePage:
+        def __init__(self, text: str) -> None:
+            self._text = text.encode("utf-8")
+
+        def read(self, *args: Any) -> bytes:
+            return self._text
+
+        def __enter__(self) -> "FakePage":
+            return self
+
+        def __exit__(self, *exc: Any) -> None:
+            return None
+
+    class FakeUrlopen:
+        def __call__(self, request: Any, timeout: int) -> FakePage:
+            return FakePage(
+                "<html><body><h1>Hello</h1><p>world of web.</p></body></html>"
+            )
+
+    register_web_tools(registry, urlopen=FakeUrlopen())
+    server, thread = _start_web_server(registry)
+    try:
+        payload = _retry_transport(
+            _get_json, f"http://127.0.0.1:{server.port}/api/fetch?url=https://example.com"
+        )
+        assert "Hello world of web." in payload["result"]
+        assert "<h1>" not in payload["result"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 if __name__ == "__main__":

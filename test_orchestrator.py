@@ -98,9 +98,13 @@ def test_to_openai_tools_wraps_definitions() -> None:
     assert "requires_approval" not in run_code
 
 
-def test_registry_rejects_networked_by_default() -> None:
+def test_registry_includes_web_search_and_excludes_email() -> None:
     registry: TR = default_registry()
-    assert registry.definition("web_search") is None
+    assert registry.definition("web_search") is not None
+    assert registry.definition("fetch_url") is not None
+    # send_email/send_message remain opt-in networked (MCP_BASE_URL)
+    assert registry.definition("send_email") is None
+    assert registry.definition("send_message") is None
 
 
 def test_provider_renders_messages_in_order() -> None:

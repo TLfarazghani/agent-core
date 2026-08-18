@@ -191,10 +191,15 @@ class LlamaCppProvider:
 
 
 def default_registry() -> ToolRegistry:
-    """Full local registry (doc-gen + run_code). Networked tools are opt-in."""
-    from tools import register_docgen_tools, register_runcode_tool
+    """Full local registry (web search + doc-gen + run_code)."""
+    from tools import (
+        register_docgen_tools,
+        register_runcode_tool,
+        register_web_tools,
+    )
 
     registry = ToolRegistry()
+    register_web_tools(registry)
     register_docgen_tools(registry)
     register_runcode_tool(registry)
     return registry

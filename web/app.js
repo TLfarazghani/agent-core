@@ -8,7 +8,10 @@ const state = {
   streaming: false,
   pendingApproval: false,
   liveBubble: null,
+  transport: "server",
 };
+
+let browserWorker = null;
 
 const els = {
   input: $("input"),
@@ -25,6 +28,8 @@ const els = {
   approvalArgs: $("approval-args"),
   approve: $("approve-btn"),
   reject: $("reject-btn"),
+  transportServer: $("transport-server"),
+  transportBrowser: $("transport-browser"),
 };
 
 /* ---------- HTTP helpers ---------- */
@@ -166,6 +171,16 @@ function hideApproval() {
 
 async function handleEvent(event, data) {
   switch (event) {
+    case "status":
+      if (state.transport === "browser" && data.detail) {
+        if (data.detail === "model ready") {
+          els.modelStatus.textContent = "\u25c9 in-browser \u00b7 ready";
+          els.modelStatus.className = "";
+        } else {
+          els.modelStatus.textContent = "\u25c9 in-browser \u00b7 " + data.detail;
+        }
+      }
+      break;
     case "token":
       if (!state.liveBubble) startLiveBubble();
       state.liveBubble.textContent += data.text;
@@ -195,9 +210,61 @@ async function handleEvent(event, data) {
   }
 }
 
+/* ---------- browser (WebGPU) transport ---------- */
+
+function startBrowserWorker() {
+  if (browserWorker) return;
+  browserWorker = new Worker("worker.js", { type: "module" });
+  browserWorker.onmessage = (e) => handleEvent(e.data.type, e.data);
+  browserWorker.onerror = (e) => {
+    const where = [e.filename, e.lineno, e.colno].filter(Boolean).join(":");
+    appendElement(
+      "div",
+      "msg error",
+      `browser worker error: ${e.message || "failed to load worker.js"}${where ? " (" + where + ")" : ""}`
+    );
+    els.modelStatus.textContent = "\u25c9 in-browser \u00b7 worker failed";
+    els.modelStatus.className = "";
+    setBusy(false);
+  };
+  browserWorker.postMessage({ type: "init" });
+}
+
+function stopBrowserWorker() {
+  if (browserWorker) {
+    browserWorker.terminate();
+    browserWorker = null;
+  }
+}
+
+function setTransport(t) {
+  state.transport = t;
+  els.transportServer.classList.toggle("active", t === "server");
+  els.transportBrowser.classList.toggle("active", t === "browser");
+  hideApproval();
+  els.messages.innerHTML = "";
+  state.liveBubble = null;
+  state.agentState = null;
+  state.sessionId = null;
+  updateTurnCounter();
+  if (t === "server") {
+    stopBrowserWorker();
+    els.modelStatus.className = "";
+    refreshHealth();
+    refreshSessions();
+    createSession();
+  } else {
+    startBrowserWorker();
+    els.modelStatus.textContent = "\u25c9 in-browser \u00b7 loading model\u2026";
+    els.modelStatus.className = "busy";
+    els.sessionList.innerHTML = "<li>in-browser session (not persisted)</li>";
+  }
+}
+
 /* ---------- actions ---------- */
 
 async function refreshSessions() {
+  if (state.transport !== "server") return;
   try {
     const { sessions } = await fetchJSON("/api/sessions");
     els.sessionList.innerHTML = "";
@@ -216,6 +283,7 @@ async function refreshSessions() {
 
 async function selectSession(id) {
   if (state.streaming || state.pendingApproval) return;
+  if (state.transport !== "server") return;
   try {
     const { state: agentState } = await fetchJSON(`/api/sessions/${id}`);
     state.sessionId = id;
@@ -228,6 +296,11 @@ async function selectSession(id) {
 
 async function createSession() {
   hideApproval();
+  if (state.transport === "browser") {
+    if (!browserWorker) startBrowserWorker();
+    browserWorker.postMessage({ type: "reset" });
+    return;
+  }
   try {
     const { session_id } = await fetchJSON("/api/sessions", { method: "POST" });
     state.sessionId = session_id;
@@ -241,8 +314,13 @@ async function createSession() {
 }
 
 async function clearSession() {
-  if (state.streaming || state.pendingApproval || !state.sessionId) return;
+  if (state.streaming || state.pendingApproval) return;
   if (!confirm("Clear the chat history of this session?")) return;
+  if (state.transport === "browser") {
+    browserWorker.postMessage({ type: "reset" });
+    return;
+  }
+  if (!state.sessionId) return;
   try {
     const { state: agentState } = await fetchJSON(`/api/sessions/${state.sessionId}/clear`, {
       method: "POST",
@@ -256,7 +334,12 @@ async function clearSession() {
 }
 
 async function deleteCurrentSession() {
-  if (state.streaming || state.pendingApproval || !state.sessionId) return;
+  if (state.streaming || state.pendingApproval) return;
+  if (state.transport === "browser") {
+    clearSession();
+    return;
+  }
+  if (!state.sessionId) return;
   if (!confirm("Delete this session permanently?")) return;
   try {
     await fetchJSON(`/api/sessions/${state.sessionId}`, { method: "DELETE" });
@@ -269,7 +352,16 @@ async function deleteCurrentSession() {
 async function sendMessage() {
   if (state.streaming || state.pendingApproval) return;
   const text = els.input.value.trim();
-  if (!text || !state.sessionId) return;
+  if (!text) return;
+  if (state.transport === "browser") {
+    els.input.value = "";
+    appendElement("div", "msg user", text);
+    setBusy(true);
+    if (!browserWorker) startBrowserWorker();
+    browserWorker.postMessage({ type: "chat", text });
+    return;
+  }
+  if (!state.sessionId) return;
   els.input.value = "";
   appendElement("div", "msg user", text);
   setBusy(true);
@@ -282,9 +374,15 @@ async function sendMessage() {
 }
 
 async function approveAction(approved) {
-  if (!state.pendingApproval || !state.sessionId) return;
+  if (!state.pendingApproval) return;
   hideApproval();
   setBusy(true);
+  if (state.transport === "browser") {
+    if (!browserWorker) startBrowserWorker();
+    browserWorker.postMessage({ type: approved ? "approve" : "reject" });
+    return;
+  }
+  if (!state.sessionId) return;
   try {
     await streamPost(`/api/sessions/${state.sessionId}/${approved ? "approve" : "reject"}`, {});
   } catch (err) {
@@ -316,6 +414,8 @@ els.clearSession.addEventListener("click", clearSession);
 els.deleteSession.addEventListener("click", deleteCurrentSession);
 els.approve.addEventListener("click", () => approveAction(true));
 els.reject.addEventListener("click", () => approveAction(false));
+els.transportServer.addEventListener("click", () => setTransport("server"));
+els.transportBrowser.addEventListener("click", () => setTransport("browser"));
 document.addEventListener("keydown", (e) => {
   if (!state.pendingApproval) return;
   if (e.key === "a" || e.key === "A") approveAction(true);

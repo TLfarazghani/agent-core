@@ -246,6 +246,26 @@ body {
   gap: 8px;
 }
 
+#transport-toggle {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+#transport-toggle .btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+#model-status.busy { color: var(--muted); }
+#model-status.busy .dot { animation: pulse 1.2s infinite; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
 #composer {
   display: flex;
   gap: 10px;

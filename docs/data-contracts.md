@@ -88,10 +88,24 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 
 ## Tool contracts by category
 
-**Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue):**
+**Web search — local, keyless, stdlib-only (no MCP remote required):**
 
 ```json
-{ "name": "web_search", "parameters": { "query": "string" } }
+{
+  "name": "web_search",
+  "parameters": { "query": "string", "kind": "web|news|wikipedia?", "max_results": "integer? 1-10" }
+}
+{
+  "name": "fetch_url",
+  "parameters": { "url": "string (http(s) only)", "max_chars": "integer? 200-20000" }
+}
+```
+
+`web_search` backends: `web` → DuckDuckGo HTML, `news` → Google News RSS, `wikipedia` → Wikipedia Search API. In the browser, both tools proxy through `web/server.py` (`/api/search`, `/api/fetch`) to avoid CORS; neither requires approval (read-only).
+
+**Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue), opt-in via `MCP_BASE_URL`:**
+
+```json
 { "name": "send_email", "parameters": { "to": "string", "subject": "string", "body": "string", "attachments": "string[]?" } }
 { "name": "send_message", "parameters": { "channel": "whatsapp|telegram", "to": "string", "text": "string" } }
 ```

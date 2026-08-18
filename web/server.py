@@ -14,6 +14,8 @@ Endpoints
     GET  /app.js, /style.css        -> static assets
     GET  /api/health                -> model server status
     GET  /api/tools                 -> registered tool definitions
+    GET  /api/search?q=..&kind=..   -> web/news/wikipedia search (no key)
+    GET  /api/fetch?url=..          -> fetch a page as plain text
     POST /api/sessions              -> create a session
     GET  /api/sessions              -> list saved sessions
     GET  /api/sessions/<id>         -> full AgentState
@@ -34,6 +36,7 @@ import os
 import socket
 import sys
 import threading
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,7 +44,7 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import AgentState, user_message
+from core import AgentState, ToolCall, new_state, user_message
 from core.loop import MaxTurnsError, resolve_approval, step
 from core.sessions import (
     delete_session,
@@ -59,6 +62,8 @@ from windows.orchestrator import (
 )
 
 _WEB_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _WEB_DIR.parent
+_MODELS_DIR = _REPO_ROOT / "models"
 _HEALTH_URL = DEFAULT_BASE_URL.removesuffix("/v1") + "/health"
 
 ProviderFactory = Callable[[Callable[[str], None]], Any]
@@ -269,9 +274,35 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
 
+    def _search_dispatch(self, app: AgentApp, args: dict[str, Any]) -> None:
+        try:
+            msg = app.registry.dispatch(
+                new_state(target="webgpu", model="web_search"),
+                ToolCall(id="web_search", name="web_search", arguments=args),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(500, {"error": f"web search failed: {exc}"})
+        return self._send_json(200, {"result": msg.content})
+
+    def _fetch_dispatch(self, app: AgentApp, args: dict[str, Any]) -> None:
+        try:
+            msg = app.registry.dispatch(
+                new_state(target="webgpu", model="fetch_url"),
+                ToolCall(id="fetch_url", name="fetch_url", arguments=args),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(500, {"error": f"fetch failed: {exc}"})
+        return self._send_json(200, {"result": msg.content})
+
     def _serve_static(self, name: str) -> None:
-        path = (_WEB_DIR / name).resolve()
-        if _WEB_DIR not in path.parents:
+        return self._serve_file(_WEB_DIR, name)
+
+    def _serve_model_file(self, name: str) -> None:
+        return self._serve_file(_MODELS_DIR, name)
+
+    def _serve_file(self, base: Path, name: str) -> None:
+        path = (base / name).resolve()
+        if base not in path.parents:
             self._send_json(403, {"error": "forbidden"})
             return
         if not path.is_file():
@@ -280,8 +311,14 @@ class Handler(BaseHTTPRequestHandler):
         content_types = {
             ".html": "text/html; charset=utf-8",
             ".js": "text/javascript; charset=utf-8",
+            ".mjs": "text/javascript; charset=utf-8",
             ".css": "text/css; charset=utf-8",
             ".svg": "image/svg+xml",
+            ".json": "application/json; charset=utf-8",
+            ".onnx": "application/octet-stream",
+            ".gguf": "application/octet-stream",
+            ".bin": "application/octet-stream",
+            ".wasm": "application/wasm",
         }
         body = path.read_bytes()
         self.send_response(200)
@@ -297,10 +334,36 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             return self._serve_static("index.html")
-        if path in ("/app.js", "/style.css"):
-            return self._serve_static(path.lstrip("/"))
+        if path.startswith("/api/"):
+            return self._handle_api_get(app, path)
+        if path.startswith("/models/"):
+            return self._serve_model_file(path[len("/models/"):])
+        return self._serve_static(path.lstrip("/"))
+
+    def _handle_api_get(self, app: AgentApp, path: str) -> None:
         if path == "/api/health":
             return self._send_json(200, {"ok": app.health(), "base_url": DEFAULT_BASE_URL})
+        if path == "/api/search":
+            params = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            args = {
+                "query": (params.get("q") or params.get("query") or [""])[0],
+                "kind": (params.get("kind") or ["web"])[0],
+            }
+            max_results = params.get("max_results", ["5"])
+            try:
+                args["max_results"] = int(max_results[0])
+            except ValueError:
+                pass
+            return self._search_dispatch(app, args)
+        if path == "/api/fetch":
+            params = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+            args = {"url": (params.get("url") or [""])[0]}
+            max_chars = params.get("max_chars", ["4000"])
+            try:
+                args["max_chars"] = int(max_chars[0])
+            except ValueError:
+                pass
+            return self._fetch_dispatch(app, args)
         if path == "/api/tools":
             tools = [
                 {

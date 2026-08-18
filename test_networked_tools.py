@@ -95,13 +95,27 @@ def test_web_search_returns_results() -> None:
     try:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
-        msg = _dispatch(registry, "web_search", {"query": "liquid ai lfm 2.5"})
+        msg = _dispatch(registry, "send_message", {"channel": "telegram", "to": "me", "text": "hi"})
         assert msg is not None
         assert msg.role == "tool"
-        assert "Hugging Face" in msg.content
+        assert "message sent" in msg.content
         assert server.state.calls[0]["method"] == "tools/call"
-        assert server.state.calls[0]["params"]["name"] == "web_search"
-        assert server.state.calls[0]["params"]["arguments"] == {"query": "liquid ai lfm 2.5"}
+        assert server.state.calls[0]["params"]["name"] == "send_message"
+        assert server.state.calls[0]["params"]["arguments"] == {"channel": "telegram", "to": "me", "text": "hi"}
+    finally:
+        server.stop()
+
+
+def test_web_search_no_longer_networked() -> None:
+    """web_search is now a local tool (register_web_tools); it must NOT be
+    registered by the MCP remote anymore."""
+    server = MockMcpServer()
+    server.start()
+    try:
+        registry = ToolRegistry()
+        register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
+        names = {d.name for d in registry.definitions()}
+        assert names == {"send_email", "send_message"}
     finally:
         server.stop()
 
@@ -143,7 +157,7 @@ def test_api_key_forwarded() -> None:
     try:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}", api_key="secret-key")
-        _dispatch(registry, "web_search", {"query": "q"})
+        _dispatch(registry, "send_message", {"channel": "telegram", "to": "me", "text": "hi"})
         assert server.state.auth_seen == "Bearer secret-key"
     finally:
         server.stop()
@@ -170,7 +184,7 @@ def test_registry_definitions_loaded() -> None:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
         names = {d.name for d in registry.definitions()}
-        assert names == {"web_search", "send_email", "send_message"}
+        assert names == {"send_email", "send_message"}
     finally:
         server.stop()
 

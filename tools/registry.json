@@ -27,14 +27,29 @@
   },
   {
     "name": "web_search",
-    "description": "Search the web and return top results for a query.",
+    "description": "Search the web and return top results. kind='web' for general web search, kind='news' for latest headlines, kind='wikipedia' for encyclopedia entries. Does not require approval.",
     "requires_approval": false,
     "parameters": {
       "type": "object",
       "properties": {
-        "query": { "type": "string", "minLength": 1 }
+        "query": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["web", "news", "wikipedia"] },
+        "max_results": { "type": "integer", "minimum": 1, "maximum": 10 }
       },
       "required": ["query"]
+    }
+  },
+  {
+    "name": "fetch_url",
+    "description": "Fetch a URL and return its text content as trimmed plain text. Use when a search snippet is not enough and you need the actual page content. Does not require approval.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string", "minLength": 1 },
+        "max_chars": { "type": "integer", "minimum": 200, "maximum": 20000 }
+      },
+      "required": ["url"]
     }
   },
   {

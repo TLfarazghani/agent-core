@@ -60,13 +60,19 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 ## Phase 1 — Networked tools (uniform MCP-remote)
 
 - [x] `tools/remote.py` — `McpClient` (stdlib-only JSON-RPC over HTTP, MCP `tools/call` shape; ports to JS/Kotlin)
-- [x] `tools/web_search.py` — `web_search(query)`
 - [x] `tools/send_email.py` — `send_email(to, subject, body, attachments?)`
 - [x] `tools/send_message.py` — `send_message(channel, to, text)` (whatsapp|telegram)
 - [x] Uniform MCP-remote transport so all three platforms share the identical HTTP implementation shape (no subprocess transport issue)
 - [x] Tool tests with mocked remotes (`test_networked_tools.py` — stdlib HTTP mock, no real network)
 
 **Gate:** each networked tool dispatch returns schema-valid results with a mocked remote. **PASSED 2026-08-17** (6/6).
+
+## Phase 1b — Local web search (keyless, no MCP remote) **PASSED 2026-08-18**
+
+- [x] `tools/web_search.py` — **local** `web_search(query, kind?, max_results?)` + `fetch_url(url, max_chars?)`: real, keyless, stdlib-only. `kind="web"` → DuckDuckGo HTML; `kind="news"` → Google News RSS; `kind="wikipedia"` → Wikipedia Search API. `fetch_url` returns a trimmed plain-text page extract. Injectable `urlopen` so tests never touch the network (mirrors run_code's injectable docker client)
+- [x] Registered in `default_registry()` on Windows (`web/server.py` + `cli.py`) — **no MCP_BASE_URL required**; `send_email`/`send_message` remain opt-in networked
+- [x] Browser proxy: `web/server.py` `GET /api/search` + `GET /api/fetch` (avoids CORS), and `web/worker.js` in-browser `web_search`/`fetch_url` tools route through them
+- [x] Tests: `test_web_search.py` (8 tests, fake urlopen: DDG/News/Wikipedia parsing, fetch text extraction, arg validation) + 2 web-proxy tests in `test_web.py`. Live-verified 2026-08-18: real DDG results, real Google News headlines, real Wikipedia entries, real page fetch
 
 ## Phase 2 — Local doc-gen (per-platform backends)
 
@@ -105,9 +111,11 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 - [x] Real E2E on llama-server: `run_code` tool call → approval gate → Docker `print(7)` → `7` → final answer
 - [x] **Web UI (v1)** — `web/server.py` (stdlib `ThreadingHTTPServer` + SSE: `token`/`tool_call`/`tool_result`/`approval`/`done` events; endpoints for sessions/tools/health/approve/reject), `web/index.html` + `style.css` + `app.js` (vanilla SPA: chat canvas, tool cards, approval modal with `a`/`r`/Esc keys, session sidebar, model status), `test_web.py` (8 tests, fake provider, no llama needed). Verified live: real model streams tokens; run_code → approval → Docker `99` → streaming reply.
 - [x] `Core-agent.bat` — one-click launcher: starts llama-server if down, checks Docker, starts web UI, opens browser
-- [ ] in-browser model (WebGPU / Transformers.js + Pyodide `run_code`) — deferred; web UI currently drives local llama-server
+- [x] `web/parser.js` — line-for-line JS port of `core/parser.py` (UMD: CommonJS / browser global / worker global; tokenizer + recursive-descent parser, no eval; `ParserSyntaxError` vs `ParserError` split matches Python's lenient/strict semantics). Verified by `test_parser_js.py` (4 parity tests, Node harness) — **all pass**
+- [x] `web/engine.js` — in-browser loop, pure JS port of `core/loop.py` (`step`/`start`/`resolve_approval`, hardcoded approval gate, turn cap). Verified by `test_webgpu_engine.mjs` (7 tests, fake provider, real `web/parser.js`, no WebGPU) — **all pass**
+- [x] `web/worker.js` — module worker (ESM): Transformers.js v4.2.0 (`LiquidAI/LFM2.5-1.2B-Instruct-ONNX`, `device:"webgpu"`, `dtype:"q4"`, WASM fallback) + Pyodide v314.0.5 for `run_code`; in-browser `web_search`/`fetch_url` tools proxy through `/api/search` + `/api/fetch`; streams `token`/`tool_call`/`tool_result`/`approval`/`error`/`done` mirroring the SSE server. WebGPU inference itself needs a real browser to verify
+- [x] Web UI transport toggle (`web/index.html` + `app.js`): `local` (llama-server SSE) ↔ `in-browser` (`new Worker("worker.js", {type:"module"})`, in-memory session, Pyodide approval gate) — model load requires a real browser + WebGPU
 - [ ] `android/AgentCore.kt` — Kotlin port of core control flow (ported, not reinvented) — deferred, gate passed
-- [ ] `web/worker.js` + `web/parser.js` — line-for-line port of `core/parser.py` — deferred, gate passed (raw-path fallback)
 - [x] Measure tok/s + tool-call accuracy; record in `docs/benchmarks.md` (see below)
 
 **Measurements (2026-08-17):** ~215 tok/s mean (RTX 4060 Ti, Q4_K_M); tool-call accuracy **15/18 = 83%** (100% on well-specified prompts, deterministic failure on under-specified ones). Full tables in `docs/benchmarks.md`.

@@ -1,7 +1,9 @@
 """Tool registration helpers.
 
-- ``register_networked_tools`` — Phase 1: web_search / send_email / send_message
-  over the shared MCP-remote client.
+- ``register_web_tools`` — web_search (DuckDuckGo / Google News / Wikipedia) and
+  fetch_url: real, keyless, stdlib-only web search (no MCP remote required).
+- ``register_networked_tools`` — Phase 1: send_email / send_message over the
+  shared MCP-remote client (web_search is now local via register_web_tools).
 - ``register_docgen_tools`` — Phase 2: create_docx / create_pptx local compute
   (Windows backend: python-docx / python-pptx).
 - ``register_runcode_tool`` — Phase 3: run_code Docker sandbox (approval-gated).
@@ -10,18 +12,33 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.tool_registry import ToolRegistry
 
 from .remote import McpClient, tool_handler
+from .web_search import make_handler as make_websearch_handler
+from .web_search import make_fetch_handler as make_fetch_handler
 from .create_docx import make_handler as make_docx_handler
 from .create_pptx import make_handler as make_pptx_handler
 from .run_code import make_handler as make_runcode_handler
 
-NETWORKED_TOOLS = {"web_search", "send_email", "send_message"}
+WEB_TOOLS = {"web_search", "fetch_url"}
+NETWORKED_TOOLS = {"send_email", "send_message"}
 DOCGEN_TOOLS = {"create_docx", "create_pptx"}
 RUNCODE_TOOLS = {"run_code"}
+
+
+def register_web_tools(
+    registry: ToolRegistry,
+    urlopen: Callable | None = None,
+) -> ToolRegistry:
+    handlers = {
+        "web_search": make_websearch_handler(urlopen=urlopen),
+        "fetch_url": make_fetch_handler(urlopen=urlopen),
+    }
+    registry.load_json("tools/registry.json", handlers, names=WEB_TOOLS)
+    return registry
 
 
 def register_networked_tools(
