@@ -238,6 +238,13 @@ body {
 
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-approve { background: var(--approval); border-color: var(--approval); color: #1a1206; font-weight: 700; }
+.btn-small { padding: 5px 9px; font-size: 12px; flex: 1; }
+.btn-danger { color: #ff9d9d; border-color: rgba(255, 90, 90, 0.45); background: rgba(255, 90, 90, 0.08); }
+
+#session-actions {
+  display: flex;
+  gap: 8px;
+}
 
 #composer {
   display: flex;

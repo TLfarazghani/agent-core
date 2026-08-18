@@ -18,6 +18,7 @@ Endpoints
     GET  /api/sessions              -> list saved sessions
     GET  /api/sessions/<id>         -> full AgentState
     DELETE /api/sessions/<id>       -> delete a session
+    POST /api/sessions/<id>/clear     -> reset history, keep the same session
     POST /api/sessions/<id>/messages  -> run a turn, streams SSE events
     POST /api/sessions/<id>/approve   -> approve pending tool, streams SSE
     POST /api/sessions/<id>/reject    -> reject pending tool, streams SSE
@@ -146,8 +147,16 @@ class AgentApp:
         return state
 
     def delete_session(self, session_id: str) -> bool:
-        self._sessions.pop(session_id, None)
-        return delete_session(session_id)
+        in_memory = self._sessions.pop(session_id, None)
+        return delete_session(session_id) or in_memory is not None
+
+    def clear_session(self, session_id: str) -> AgentState:
+        """Reset a session to a fresh state, keeping the same session id."""
+        state = new_agent_state()
+        state.session_id = session_id
+        self._sessions[session_id] = state
+        save_session(state)
+        return state
 
     def _save_best_effort(self, state: AgentState) -> None:
         try:
@@ -325,6 +334,13 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split("/")
             session_id = parts[3]
             action = parts[4] if len(parts) > 4 else None
+            if action == "clear":
+                try:
+                    app.get_session(session_id)
+                except (FileNotFoundError, ValueError):
+                    return self._send_json(404, {"error": "session not found"})
+                state = app.clear_session(session_id)
+                return self._send_json(200, {"state": state.model_dump()})
             try:
                 state = app.get_session(session_id)
             except (FileNotFoundError, ValueError):

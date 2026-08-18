@@ -60,9 +60,22 @@ class _TestServer:
     def __init__(self) -> None:
         self.registry, _ = _build_registry()
         self.server = make_server(AgentApp(registry=self.registry, health_check=lambda: True), 0)
+        self.server.block_on_close = True
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        self._warm_up()
+
+    def _warm_up(self) -> None:
+        for _ in range(50):
+            try:
+                self.get("/api/health")
+                return
+            except (urllib.error.URLError, ConnectionError, OSError):
+                import time
+
+                time.sleep(0.02)
+        raise RuntimeError("test server failed to start")
 
     def url(self, path: str) -> str:
         return f"http://127.0.0.1:{self.port}{path}"
@@ -70,12 +83,19 @@ class _TestServer:
     def stop(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+        self.thread.join(timeout=5)
 
     def get(self, path: str) -> Any:
+        return _retry_transport(self._get, path)
+
+    def _get(self, path: str) -> Any:
         with urllib.request.urlopen(self.url(path), timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     def sse(self, path: str, body: dict) -> list[tuple[str, dict]]:
+        return _retry_transport(self._sse, path, body)
+
+    def _sse(self, path: str, body: dict) -> list[tuple[str, dict]]:
         request = urllib.request.Request(
             self.url(path),
             data=json.dumps(body).encode("utf-8"),
@@ -98,12 +118,30 @@ class _TestServer:
         return events
 
 
+def _retry_transport(fn, *args):
+    """Windows: rapid server start/stop can RST a fresh connection (WinError 10053).
+
+    This is a test-harness socket teardown race, not a server bug. Retry once
+    on transport-level aborts; HTTP-level errors still propagate.
+    """
+    try:
+        return fn(*args)
+    except (ConnectionAbortedError, ConnectionResetError, urllib.error.URLError):
+        import time
+
+        time.sleep(0.1)
+        return fn(*args)
+
+
 def _create_session(server: _TestServer) -> str:
     import urllib.request as ur
 
-    request = ur.Request(server.url("/api/sessions"), data=b"{}", method="POST")
-    with ur.urlopen(request, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))["session_id"]
+    def create():
+        request = ur.Request(server.url("/api/sessions"), data=b"{}", method="POST")
+        with ur.urlopen(request, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))["session_id"]
+
+    return _retry_transport(create)
 
 
 def _events(server: _TestServer, path: str, body: dict | None = None) -> list[tuple[str, dict]]:
@@ -254,6 +292,58 @@ def test_unknown_session_404() -> None:
         try:
             server.get("/api/sessions/nope-123")
             assert False, "expected 404"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+    finally:
+        server.stop()
+
+
+def test_clear_resets_history_keeps_session() -> None:
+    server = _TestServer()
+    try:
+        app: AgentApp = server.server.app
+
+        def factory(emit_token):
+            return FakeProvider([ChatMessage(role="assistant", content="first reply")])
+
+        app.provider_factory = factory
+        session_id = _create_session(server)
+        _events(server, f"/api/sessions/{session_id}/messages", {"message": "hi"})
+
+        def clear():
+            request = urllib.request.Request(
+                server.url(f"/api/sessions/{session_id}/clear"), data=b"{}", method="POST"
+            )
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))["state"]
+
+        cleared = _retry_transport(clear)
+        assert cleared["session_id"] == session_id
+        assert cleared["messages"] == [] or all(m["role"] != "user" for m in cleared["messages"])
+
+        assert server.get(f"/api/sessions/{session_id}")["state"]["session_id"] == session_id
+    finally:
+        server.stop()
+
+
+def test_delete_session() -> None:
+    server = _TestServer()
+    try:
+        session_id = _create_session(server)
+        assert server.get(f"/api/sessions/{session_id}")["state"]["session_id"] == session_id
+
+        def delete():
+            request = urllib.request.Request(
+                server.url(f"/api/sessions/{session_id}"), method="DELETE"
+            )
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        deleted = _retry_transport(delete)
+        assert deleted["deleted"] is True
+        try:
+            server.get(f"/api/sessions/{session_id}")
+            assert False, "expected 404 after delete"
         except urllib.error.HTTPError as exc:
             assert exc.code == 404
     finally:

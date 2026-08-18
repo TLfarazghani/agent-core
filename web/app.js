@@ -17,6 +17,8 @@ const els = {
   sessionList: $("session-list"),
   modelStatus: $("model-status"),
   newSession: $("new-session"),
+  clearSession: $("clear-session"),
+  deleteSession: $("delete-session"),
   turnCounter: $("turn-counter"),
   modal: $("approval-modal"),
   approvalTool: $("approval-tool"),
@@ -143,6 +145,8 @@ function setBusy(busy) {
   state.streaming = busy;
   els.input.disabled = busy;
   els.send.disabled = busy;
+  els.clearSession.disabled = busy;
+  els.deleteSession.disabled = busy;
 }
 
 function showApproval(data) {
@@ -236,6 +240,32 @@ async function createSession() {
   }
 }
 
+async function clearSession() {
+  if (state.streaming || state.pendingApproval || !state.sessionId) return;
+  if (!confirm("Clear the chat history of this session?")) return;
+  try {
+    const { state: agentState } = await fetchJSON(`/api/sessions/${state.sessionId}/clear`, {
+      method: "POST",
+    });
+    renderMessages(agentState);
+    refreshSessions();
+    els.input.focus();
+  } catch (err) {
+    appendElement("div", "msg error", "could not clear history: " + err.message);
+  }
+}
+
+async function deleteCurrentSession() {
+  if (state.streaming || state.pendingApproval || !state.sessionId) return;
+  if (!confirm("Delete this session permanently?")) return;
+  try {
+    await fetchJSON(`/api/sessions/${state.sessionId}`, { method: "DELETE" });
+    await createSession();
+  } catch (err) {
+    appendElement("div", "msg error", "could not delete session: " + err.message);
+  }
+}
+
 async function sendMessage() {
   if (state.streaming || state.pendingApproval) return;
   const text = els.input.value.trim();
@@ -282,6 +312,8 @@ els.input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) sendMessage();
 });
 els.newSession.addEventListener("click", createSession);
+els.clearSession.addEventListener("click", clearSession);
+els.deleteSession.addEventListener("click", deleteCurrentSession);
 els.approve.addEventListener("click", () => approveAction(true));
 els.reject.addEventListener("click", () => approveAction(false));
 document.addEventListener("keydown", (e) => {
