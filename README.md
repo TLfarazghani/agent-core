@@ -4,9 +4,9 @@ A general-purpose local "JARVIS" assistant on LFM2.5: research/search, email, me
 
 One model family, three runtimes, one shared JSON contract.
 
-- **Windows (primary, in progress):** llama.cpp `llama-server`, GGUF, OpenAI-compatible `/v1/chat/completions`, Docker `run_code` sandbox
+- **Windows (shipped):** llama.cpp `llama-server`, GGUF, OpenAI-compatible `/v1/chat/completions`, Docker `run_code` sandbox
 - **Android (planned port):** LEAP SDK (Kotlin/JNI), same schemas via kotlinx/Gson, no on-device `run_code` (platform ceiling)
-- **WebGPU (planned port):** Transformers.js + ONNX Runtime Web, WASM fallback, Pyodide `run_code` sandbox
+- **WebGPU (code written, unverified in a browser):** Transformers.js + ONNX Runtime Web, WASM fallback, Pyodide `run_code` sandbox
 
 The agent loop, tool registry, state machine, and approval gate are transport-agnostic. Each platform implements only a thin adapter between `AgentState` and the provider, plus its own sandbox backend.
 
@@ -14,11 +14,14 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 
 | Phase | Deliverable | Status |
 |---|---|---|
-| 0 | Core — AgentState + tool-call parser + registry + approval gate | **in progress** |
-| 1 | Networked tools — search, email, messaging (uniform MCP-remote) | pending |
-| 2 | Local doc-gen — docx/pptx, 3 platform-specific backends | pending |
-| 3 | Code execution + sandbox — Docker / Pyodide, approval-gated | pending |
-| 4 | Full cross-platform parity — Android + WebGPU ports | pending |
+| 0 | Core — AgentState + tool-call parser + registry + approval gate | **DONE** — gate passed |
+| 1 | Networked tools — email, messaging (uniform MCP-remote, opt-in) | **DONE** — gate passed |
+| 1b | Local web search — `web_search` (DuckDuckGo / Google News / Wikipedia) + `fetch_url`, keyless | **DONE** — gate passed |
+| 2 | Local doc-gen — docx/pptx, 3 platform-specific backends | **DONE** — Windows backend shipped |
+| 3 | Code execution + sandbox — Docker / Pyodide, approval-gated | **DONE** — Windows Docker shipped; browser Pyodide written (needs live WebGPU verification) |
+| 4 | Full cross-platform parity — Android + WebGPU ports | **Windows done**; WebGPU code written (unverified in a real browser); Android pending |
+
+Test suites: core 13/13, networked 7/7, web search 8/8, doc-gen 9/9, run_code 8/8, orchestrator 9/9, web UI 14/14, JS engine 7/7, parser parity 4/4. Verified live on llama-server (Phase 4 gate, ~215 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
 
 Build order is forced by dependency: Phase 3 (code execution) dispatches through the same loop Phase 0 builds.
 
