@@ -19,10 +19,21 @@ def slugify(text: str) -> str:
 
 
 def unique_path(out_dir: Path, stem: str, ext: str) -> Path:
-    """Return a non-colliding path in out_dir, suffixing _2, _3, ... if needed."""
-    path = out_dir / f"{stem}.{ext}"
-    n = 2
-    while path.exists():
-        path = out_dir / f"{stem}_{n}.{ext}"
-        n += 1
-    return path
+    """Return a non-colliding path in out_dir, suffixing _2, _3, ... if needed.
+
+    Claims the filename atomically with O_CREAT|O_EXCL so two concurrent
+    callers can't both pick the same path (the check-then-save race in the
+    old ``while path.exists()`` loop). The file is created empty; callers
+    overwrite it via their own save.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = 1
+    while True:
+        name = f"{stem}.{ext}" if n == 1 else f"{stem}_{n}.{ext}"
+        path = out_dir / name
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return path
+        except FileExistsError:
+            n += 1

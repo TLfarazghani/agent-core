@@ -72,8 +72,13 @@ def _parse_call(node: ast.Call, index: int) -> dict:
 def parse_tool_calls(text: str) -> list[dict]:
     """Extract every tool call from ``text`` as a dict.
 
-    Blocks that fail to parse as Python are skipped; the caller can detect
-    partial output by comparing against ``extract_blocks``.
+    Lenient mode: blocks that fail to *parse* (syntax errors) are skipped.
+    Semantic failures are NOT skipped — a block that parses but is not a
+    valid tool call (positional args, ``**kwargs``, non-literal argument
+    values) raises ``ParserError``. That mirrors ``ParserSyntaxError`` /
+    ``ParserError`` in web/parser.js. Callers that want full leniency should
+    wrap this and treat ``ParserError`` as "drop the block". The caller can
+    detect partial output by comparing against ``extract_blocks``.
     """
     calls: list[dict] = []
     index = 0

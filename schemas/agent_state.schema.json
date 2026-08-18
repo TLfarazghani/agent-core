@@ -31,6 +31,11 @@
         "tool_name": { "type": "string" },
         "arguments": { "type": "object" }
       }
+    },
+    "pending_calls": {
+      "type": "array",
+      "items": { "$ref": "chat_message.schema.json#/$defs/toolCall" },
+      "description": "Tool calls from the current turn parked behind a pending_approval; resumed by resolve_approval."
     }
   }
 }

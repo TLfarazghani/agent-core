@@ -227,6 +227,118 @@ def test_approval_accept_runs_sandbox() -> None:
     assert state.messages[-1].content == "ran: print(1)"
 
 
+def test_multi_call_turn_resumes_calls_after_approval() -> None:
+    """A [run_code, echo] turn must not silently drop echo.
+
+    Regression for the reported bug: step() used to break on the first
+    approval-parked call and resolve_approval() never resumed the rest.
+    """
+    registry, counter = make_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+
+    def provider(s: AgentState) -> ChatMessage:
+        return ChatMessage(
+            role="assistant",
+            content="",
+            function_calls=[
+                ToolCall(
+                    id="call_0001",
+                    name="run_code",
+                    arguments={"language": "python", "code": "print(1)", "timeout_seconds": 5},
+                ),
+                ToolCall(id="call_0002", name="echo", arguments={"text": "hello"}),
+            ],
+        )
+
+    step(state, provider, registry)
+    assert state.pending_approval is not None
+    assert state.pending_approval.tool_name == "run_code"
+    assert counter.calls == 0
+    assert len(state.pending_calls) == 1
+    assert state.pending_calls[0].name == "echo"
+
+    resolve_approval(state, registry, approved=True)
+    assert state.pending_approval is None
+    assert state.pending_calls == []
+    assert counter.calls == 2  # run_code ran on approval, then echo resumed
+    contents = [m.content for m in state.messages if m.role == "tool"]
+    assert contents == ["ran: print(1)", "echo: hello"]
+
+
+def test_multi_call_turn_rejection_records_rejected_result() -> None:
+    """Rejecting the approval-gated call records a 'rejected by user' tool
+    result and still resumes the non-approval calls behind it."""
+    registry, counter = make_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+
+    def provider(s: AgentState) -> ChatMessage:
+        return ChatMessage(
+            role="assistant",
+            content="",
+            function_calls=[
+                ToolCall(
+                    id="call_0001",
+                    name="run_code",
+                    arguments={"language": "python", "code": "print(1)", "timeout_seconds": 5},
+                ),
+                ToolCall(id="call_0002", name="echo", arguments={"text": "hi"}),
+            ],
+        )
+
+    step(state, provider, registry)
+    assert state.pending_approval is not None
+    resolve_approval(state, registry, approved=False)
+    assert state.pending_approval is None
+    # run_code never ran; echo was resumed
+    assert counter.calls == 1
+    contents = [m.content for m in state.messages if m.role == "tool"]
+    assert contents == ["rejected by user", "echo: hi"]
+
+
+def test_malformed_approval_call_fails_before_approval_gate() -> None:
+    """Regression: dispatch() used to park malformed calls for human approval
+    before validating them. A call missing required args must be rejected
+    immediately and never reach the approval gate."""
+    registry, counter = make_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    msg = registry.dispatch(
+        state,
+        ToolCall(id="call_0001", name="run_code", arguments={}),
+    )
+    assert msg is not None  # not None means it did NOT park for approval
+    assert msg.role == "tool"
+    assert "invalid arguments" in msg.content
+    assert state.pending_approval is None
+    assert counter.calls == 0
+
+
+def test_session_path_rejects_traversal() -> None:
+    """Regression: session_id came straight from the URL with no sanitization.
+    Windows treats both / and \\ as separators, so ..\\..\\ escaped the
+    sessions dir and offered read/overwrite/delete of arbitrary .json files."""
+    from core.sessions import session_path
+
+    bad_ids = [
+        "..\\..\\Users\\bob\\Desktop\\evil",
+        "../../Users/bob/Desktop/evil",
+        "a/b",
+        "a\\b",
+        "C:\\Users\\bob\\evil",
+        "..",
+        ".",
+    ]
+    for session_id in bad_ids:
+        try:
+            session_path(session_id)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"session_path({session_id!r}) must raise ValueError")
+
+    good = session_path("550e8400-e29b-41d4-a716-446655440000")
+    assert good.name == "550e8400-e29b-41d4-a716-446655440000.json"
+
+
 def test_run_driver_terminates() -> None:
     registry, counter = make_registry()
     state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")

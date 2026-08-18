@@ -174,6 +174,24 @@ class AgentApp:
         with self._lock_for(session_id):
             self._stream_turn(session_id, out)
 
+    def _emit_messages(self, out: SSEWriter, messages: list[ChatMessage]) -> None:
+        for message in messages:
+            if message.role == "assistant" and message.function_calls:
+                for call in message.function_calls:
+                    out.event(
+                        "tool_call",
+                        {"id": call.id, "name": call.name, "arguments": call.arguments},
+                    )
+            elif message.role == "tool":
+                out.event(
+                    "tool_result",
+                    {
+                        "call_id": message.tool_call_id,
+                        "content": message.content,
+                        "error": message.content.startswith("error"),
+                    },
+                )
+
     def _stream_turn(self, session_id: str, out: SSEWriter) -> None:
         """Run the loop to completion. Caller must hold the session lock."""
         state = self.get_session(session_id)
@@ -213,38 +231,15 @@ class AgentApp:
                 out.event("error", {"message": f"error: {type(exc).__name__}: {exc}"})
                 self._save_best_effort(state)
                 return
-            for message in state.messages[before:]:
-                if message.role == "assistant" and message.function_calls:
-                    for call in message.function_calls:
-                        out.event(
-                            "tool_call",
-                            {"id": call.id, "name": call.name, "arguments": call.arguments},
-                        )
-                elif message.role == "tool":
-                    out.event(
-                        "tool_result",
-                        {
-                            "call_id": message.tool_call_id,
-                            "content": message.content,
-                            "error": message.content.startswith("error"),
-                        },
-                    )
+            self._emit_messages(out, state.messages[before:])
 
     def handle_approval(self, session_id: str, approved: bool, out: SSEWriter) -> None:
         with self._lock_for(session_id):
             state = self.get_session(session_id)
             if state.pending_approval is not None:
+                before = len(state.messages)
                 resolve_approval(state, self.registry, approved=approved)
-                if approved and state.messages and state.messages[-1].role == "tool":
-                    result = state.messages[-1]
-                    out.event(
-                        "tool_result",
-                        {
-                            "call_id": result.tool_call_id,
-                            "content": result.content,
-                            "error": result.content.startswith("error"),
-                        },
-                    )
+                self._emit_messages(out, state.messages[before:])
             self._stream_turn(session_id, out)
 
     def health(self) -> bool:
@@ -259,6 +254,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
+
+    _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+    def _request_allowed(self) -> bool:
+        """Reject DNS rebinding and cross-origin (CSRF) requests.
+
+        The server is local-only, but binding to 127.0.0.1 is not enough: a
+        malicious page in the same browser can still reach localhost, and DNS
+        rebinding can point an attacker domain at 127.0.0.1. Accept requests
+        only when the Host header names a loopback host, and when an Origin
+        header is present it must be loopback too. We send no CORS headers and
+        answer OPTIONS with 403, so cross-origin preflights are blocked at the
+        browser even for same-browser pages.
+        """
+        host = self.headers.get("Host", "")
+        hostname = host.split(":")[0].lower().strip()
+        if hostname not in self._LOCAL_HOSTS:
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            origin_host = urllib.parse.urlsplit(origin).hostname
+            if origin_host is None or origin_host.lower() not in self._LOCAL_HOSTS:
+                return False
+        return True
 
     def _send_json(self, status: int, payload: Any) -> None:
         body = json.dumps(payload).encode("utf-8")
@@ -330,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802 - http.server API
+        if not self._request_allowed():
+            return self._send_json(403, {"error": "forbidden"})
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
@@ -383,11 +404,15 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 state = app.get_session(session_id)
                 return self._send_json(200, {"state": state.model_dump()})
-            except (FileNotFoundError, ValueError):
+            except ValueError:
+                return self._send_json(400, {"error": "invalid session id"})
+            except FileNotFoundError:
                 return self._send_json(404, {"error": "session not found"})
         return self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
+        if not self._request_allowed():
+            return self._send_json(403, {"error": "forbidden"})
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
         if path == "/api/sessions":
@@ -400,13 +425,17 @@ class Handler(BaseHTTPRequestHandler):
             if action == "clear":
                 try:
                     app.get_session(session_id)
-                except (FileNotFoundError, ValueError):
+                except ValueError:
+                    return self._send_json(400, {"error": "invalid session id"})
+                except FileNotFoundError:
                     return self._send_json(404, {"error": "session not found"})
                 state = app.clear_session(session_id)
                 return self._send_json(200, {"state": state.model_dump()})
             try:
                 state = app.get_session(session_id)
-            except (FileNotFoundError, ValueError):
+            except ValueError:
+                return self._send_json(400, {"error": "invalid session id"})
+            except FileNotFoundError:
                 return self._send_json(404, {"error": "session not found"})
             if action == "messages":
                 body = self._read_json()
@@ -422,13 +451,24 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(404, {"error": "not found"})
 
     def do_DELETE(self) -> None:  # noqa: N802 - http.server API
+        if not self._request_allowed():
+            return self._send_json(403, {"error": "forbidden"})
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
         if path.startswith("/api/sessions/"):
             session_id = path.split("/")[-1]
-            deleted = app.delete_session(session_id)
+            try:
+                deleted = app.delete_session(session_id)
+            except ValueError:
+                return self._send_json(400, {"error": "invalid session id"})
             return self._send_json(200 if deleted else 404, {"deleted": deleted})
         return self._send_json(404, {"error": "not found"})
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - http.server API
+        """Reject cross-origin preflights outright (no CORS headers sent)."""
+        self.send_response(403)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _stream(
         self,

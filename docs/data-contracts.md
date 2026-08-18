@@ -70,7 +70,8 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "messages": [],
   "max_turns": 8,
   "turn_count": 0,
-  "pending_approval": null
+  "pending_approval": null,
+  "pending_calls": []
 }
 ```
 
@@ -83,8 +84,9 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 | `max_turns` | int | loop cap, default 8 |
 | `turn_count` | int | incremented by the loop each generate+execute cycle |
 | `pending_approval` | object \| null | `{ "call_id", "tool_name", "arguments" }`; non-null exactly when a `requires_approval` call is waiting on a human |
+| `pending_calls` | array of ToolCall | remaining tool calls of the current turn parked behind `pending_approval`; resumed in order by `resolve_approval()` |
 
-`pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention.
+`pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention. `pending_calls` exists so multi-call turns like `[run_code, echo]` don't silently drop the calls after the approval-gated one.
 
 ## Tool contracts by category
 

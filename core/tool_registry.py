@@ -85,11 +85,22 @@ class ToolRegistry:
     def _requires_approval(self, definition: ToolDefinition) -> bool:
         return definition.name in HARDCODED_APPROVAL_TOOLS or definition.requires_approval
 
+    def _validate_call(self, call: ToolCall, definition: ToolDefinition) -> str | None:
+        """Return an error string if ``call.arguments`` fail the schema."""
+        try:
+            jsonschema.validate(instance=call.arguments, schema=definition.parameters)
+        except jsonschema.ValidationError as exc:
+            return f"error: invalid arguments for '{call.name}': {exc.message}"
+        return None
+
     def dispatch(self, state: AgentState, call: ToolCall) -> ChatMessage | None:
         """Execute ``call`` or halt for approval.
 
         Returns the tool-result ``ChatMessage``, or ``None`` when the call is
         waiting on human approval (``state.pending_approval`` is set).
+
+        Arguments are validated BEFORE the approval gate: a malformed call is
+        rejected immediately instead of being offered to the human for approval.
         """
         definition = self._definitions.get(call.name)
         if definition is None:
@@ -98,6 +109,9 @@ class ToolRegistry:
                 tool_call_id=call.id,
                 content=f"error: unknown tool '{call.name}'",
             )
+        invalid = self._validate_call(call, definition)
+        if invalid is not None:
+            return ChatMessage(role="tool", tool_call_id=call.id, content=invalid)
         if self._requires_approval(definition):
             state.pending_approval = PendingApproval(
                 call_id=call.id, tool_name=call.name, arguments=call.arguments
@@ -118,14 +132,9 @@ class ToolRegistry:
                 tool_call_id=call.id,
                 content=f"error: unknown tool '{call.name}'",
             )
-        try:
-            jsonschema.validate(instance=call.arguments, schema=definition.parameters)
-        except jsonschema.ValidationError as exc:
-            return ChatMessage(
-                role="tool",
-                tool_call_id=call.id,
-                content=f"error: invalid arguments for '{call.name}': {exc.message}",
-            )
+        invalid = self._validate_call(call, definition)
+        if invalid is not None:
+            return ChatMessage(role="tool", tool_call_id=call.id, content=invalid)
         try:
             result = self._handlers[call.name](call.arguments)
         except Exception as exc:  # noqa: BLE001 - surface handler errors as tool results

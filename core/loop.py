@@ -46,9 +46,13 @@ def step(
     state.messages.append(response)
     state.turn_count += 1
 
-    for call in response.function_calls or []:
+    for i, call in enumerate(response.function_calls or []):
         tool_msg = registry.dispatch(state, call)
         if tool_msg is None:
+            # Approval parked for this call. Keep the calls after it in this
+            # turn so resolve_approval() can resume them (fixes silent loss
+            # of multi-call turns: [run_code, echo] used to drop echo).
+            state.pending_calls = list((response.function_calls or [])[i + 1 :])
             break
         state.messages.append(tool_msg)
     return state
@@ -83,7 +87,9 @@ def resolve_approval(
     """Resolve a pending approval.
 
     Only on ``approved=True`` does the tool actually execute. ``approved=False``
-    clears the pending state without executing anything.
+    clears the pending state without executing anything. After the pending call
+    is resolved, any tool calls from the same turn that were parked behind it
+    (``state.pending_calls``) are resumed in order.
     """
     pending = state.pending_approval
     if pending is None:
@@ -92,6 +98,22 @@ def resolve_approval(
     if approved:
         call = ToolCall(id=pending.call_id, name=pending.tool_name, arguments=pending.arguments)
         state.messages.append(registry.execute(call))
+    else:
+        state.messages.append(
+            ChatMessage(
+                role="tool",
+                tool_call_id=pending.call_id,
+                content="rejected by user",
+            )
+        )
+    remaining = list(state.pending_calls)
+    state.pending_calls = []
+    for i, call in enumerate(remaining):
+        tool_msg = registry.dispatch(state, call)
+        if tool_msg is None:
+            state.pending_calls = list(remaining[i + 1 :])
+            break
+        state.messages.append(tool_msg)
     return state
 
 

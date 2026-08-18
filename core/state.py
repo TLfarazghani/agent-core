@@ -53,3 +53,4 @@ class AgentState(BaseModel):
     max_turns: int = 8
     turn_count: int = 0
     pending_approval: Optional[PendingApproval] = None
+    pending_calls: list[ToolCall] = Field(default_factory=list)

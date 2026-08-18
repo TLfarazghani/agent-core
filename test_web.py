@@ -212,6 +212,64 @@ def test_tools_listed() -> None:
         server.stop()
 
 
+def test_non_loopback_host_and_origin_rejected() -> None:
+    """DNS-rebinding / localhost-CSRF defense: requests whose Host header is
+    not loopback, or whose Origin is not loopback, get 403."""
+    server = _TestServer()
+    try:
+        evil_host = urllib.request.Request(
+            server.url("/api/tools"), headers={"Host": "evil.example.com"}
+        )
+        try:
+            urllib.request.urlopen(evil_host, timeout=10)
+            raise AssertionError("non-loopback Host should be rejected")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403, exc.code
+
+        evil_origin = urllib.request.Request(
+            server.url("/api/tools"), headers={"Origin": "https://evil.example.com"}
+        )
+        try:
+            urllib.request.urlopen(evil_origin, timeout=10)
+            raise AssertionError("non-loopback Origin should be rejected")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403, exc.code
+
+        # Same-origin request must still work (browser talks to 127.0.0.1).
+        ok = server.get("/api/tools")
+        assert "tools" in ok
+    finally:
+        server.stop()
+
+
+def test_session_traversal_rejected() -> None:
+    """session_id is used to build a filesystem path; traversal must 400/404,
+    never touch a file outside the sessions dir."""
+    server = _TestServer()
+    try:
+        for sid in ["..%5C..%5CUsers%5Cbob%5CDesktop%5Cevil", "..%2F..%2Fevil"]:
+            try:
+                server.get(f"/api/sessions/{sid}")
+                raise AssertionError("traversal session should not resolve")
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 400, exc.code
+
+        def delete_traversal():
+            request = urllib.request.Request(
+                server.url("/api/sessions/..%5C..%5Cevil"), method="DELETE"
+            )
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                return resp.status
+
+        try:
+            _retry_transport(delete_traversal)
+            raise AssertionError("traversal delete should not succeed")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400, exc.code
+    finally:
+        server.stop()
+
+
 def test_plain_chat_streams_done() -> None:
     server = _TestServer()
     try:
@@ -293,9 +351,13 @@ def test_approval_gate_reject_never_runs() -> None:
 
         events = _events(server, f"/api/sessions/{session_id}/reject")
         types = [e for e, _ in events]
+        assert "tool_result" in types
         assert "done" in types
         state = next(d for e, d in events if e == "done")["state"]
-        assert all(m["role"] != "tool" for m in state["messages"])
+        tool_messages = [m for m in state["messages"] if m["role"] == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0]["content"] == "rejected by user"
+        assert "risky ran" not in state["messages"][-1]["content"]
         assert state["messages"][-1]["content"] == "understood"
     finally:
         server.stop()

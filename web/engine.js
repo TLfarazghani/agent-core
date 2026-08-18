@@ -30,6 +30,7 @@ function newState({ session_id, model, max_turns = 8 }) {
     max_turns,
     turn_count: 0,
     pending_approval: null,
+    pending_calls: [],
   };
 }
 
@@ -105,10 +106,15 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
     assistant.function_calls = function_calls;
     append(assistant);
     state.turn_count += 1;
-    for (const call of function_calls) {
+    for (let i = 0; i < function_calls.length; i++) {
+      const call = function_calls[i];
       emit("tool_call", { id: call.id, name: call.name, arguments: call.arguments });
       await dispatch(call);
-      if (state.pending_approval) return;
+      if (state.pending_approval) {
+        /* Keep the calls after this one so resolveApproval can resume them. */
+        state.pending_calls = function_calls.slice(i + 1);
+        return;
+      }
     }
   }
 
@@ -138,7 +144,8 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
   }
 
   /* Resolve a pending approval; only approved=True executes the tool.
-   * Mirrors core/loop.resolve_approval. */
+   * Mirrors core/loop.resolve_approval. Tool calls parked behind the pending
+   * one (state.pending_calls) are resumed afterwards. */
   async function resolveApproval(approved) {
     const pending = state.pending_approval;
     if (!pending) return state;
@@ -156,6 +163,17 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
       const content = "rejected by user";
       append({ role: "tool", tool_call_id: pending.call_id, content });
       emit("tool_result", { call_id: pending.call_id, content, error: false });
+    }
+    const remaining = state.pending_calls || [];
+    state.pending_calls = [];
+    for (let i = 0; i < remaining.length; i++) {
+      const call = remaining[i];
+      emit("tool_call", { id: call.id, name: call.name, arguments: call.arguments });
+      await dispatch(call);
+      if (state.pending_approval) {
+        state.pending_calls = remaining.slice(i + 1);
+        break;
+      }
     }
     /* Continue the loop until terminal / approval / cap. */
     await start();

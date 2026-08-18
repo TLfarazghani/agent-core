@@ -33,7 +33,25 @@ def new_agent_state() -> AgentState:
 
 
 def session_path(session_id: str, session_dir: Path = SESSION_DIR) -> Path:
-    return session_dir / f"{session_id}.json"
+    """Resolve the file for a session, rejecting path traversal.
+
+    session_id comes straight from URLs / user input. On Windows, both ``\\``
+    and ``/`` are path separators, so a value like ``..\\..\\Users\\bob\\x``
+    would escape the sessions directory if unvalidated. Reject anything that
+    is not a bare filename token.
+    """
+    if not session_id or session_id in (".", ".."):
+        raise ValueError(f"invalid session_id: {session_id!r}")
+    if "/" in session_id or "\\" in session_id or ":" in session_id:
+        raise ValueError(f"invalid session_id: {session_id!r}")
+    lowered = session_id.lower()
+    if "%2f" in lowered or "%5c" in lowered:
+        raise ValueError(f"invalid session_id: {session_id!r}")
+    path = (session_dir / f"{session_id}.json").resolve()
+    resolved_dir = session_dir.resolve()
+    if resolved_dir not in path.parents:
+        raise ValueError(f"invalid session_id: {session_id!r}")
+    return path
 
 
 def save_session(state: AgentState, session_dir: Path = SESSION_DIR) -> Path:
