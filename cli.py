@@ -21,7 +21,7 @@ from core import (
     user_message,
 )
 from core.loop import MaxTurnsError
-from core.sessions import SESSION_DIR, load_session, new_agent_state, save_session
+from core.sessions import SESSION_DIR, load_session, new_agent_state, refresh_agent_bio, save_session
 from core.tool_registry import ToolRegistry
 
 from windows.orchestrator import DEFAULT_BASE_URL, LlamaCppProvider, default_registry
@@ -244,6 +244,7 @@ def main() -> int:
             elif command == "/resume":
                 try:
                     state = load_session(arg)
+                    refresh_agent_bio(state, registry)
                     rendered = 0
                     print_header(state)
                 except (FileNotFoundError, ValueError, json.JSONDecodeError):

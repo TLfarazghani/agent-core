@@ -62,6 +62,7 @@ from core.sessions import (
     list_sessions,
     load_session,
     new_agent_state,
+    refresh_agent_bio,
     save_session,
 )
 from core.tool_registry import ToolRegistry
@@ -154,6 +155,7 @@ class AgentApp:
         state = self._sessions.get(session_id)
         if state is None:
             state = load_session(session_id)
+            refresh_agent_bio(state, self.registry)
             self._sessions[session_id] = state
         return state
 

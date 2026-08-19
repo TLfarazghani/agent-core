@@ -333,8 +333,13 @@ function post(type, data) {
 
 function agentBio(state) {
   const tools = Object.keys(BROWSER_TOOLS).sort().join(", ");
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const iso = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
+    `${pad(now.getHours())}:${pad(now.getMinutes())}`;
   return (
     `You are ${AGENT_NAME}.\n` +
+    `Current date/time: ${iso}.\n` +
     `Target: ${state.target}. Model: ${state.model}.\n` +
     `Context budget: ${estimateTokens(state.messages)} ~tokens / ${ONNX_CONTEXT_TOKENS}.\n` +
     `Turn budget: ${state.turn_count}/${state.max_turns} used.\n` +

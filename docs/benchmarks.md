@@ -10,6 +10,7 @@ Record exact versions for reproducibility — ports must reproduce the same mode
 |---|---|---|
 | llama.cpp binary | `llama-b10456-bin-win-cuda-12.4-x64.zip` | 2026-08-17 |
 | GGUF | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` / `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` (697MB) | 2026-08-17 |
+| GGUF (2.6B, opt-in) | `LiquidAI/LFM2.5-2.6B-GGUF` / `LFM2.5-2.6B-Q4_K_M.gguf` (1.67GB) | 2026-08-19 |
 | Python | 3.13.5 | |
 | pydantic | 2.13.4 | |
 | openai | 3.1.0 (v3 API — orchestrator must target v3, not the research doc's v1 sample) | |
@@ -87,3 +88,28 @@ Recorded 2026-08-17 after real-server measurement (see above):
 - [x] **Windows path SHIPPED** — Android/Web ports may begin
 
 Follow-up (non-blocking): re-measure with the 2.6B model once the second-model gate opens; add prefill timings via `/health`; measure networked tools when an MCP remote is running.
+
+## Phase 7 — 2.6B second model (measured 2026-08-19)
+
+Same harness as §1-2 above (`benchmark_tool_accuracy.py`), 2.6B Q4_K_M @ 128K ctx (`-fa on`), served by the same b10456 build with `--jinja`. **Registry kept minimal** (create_docx/create_pptx/run_code only — identical to the 1.2B baseline) so accuracy is apples-to-apples; the full registry was also probed for real-world tool preference.
+
+### Side-by-side tool-call accuracy (N=3/prompt)
+
+| Prompt | 1.2B (2026-08-17) | 2.6B (2026-08-19) |
+|---|---|---|
+| create_docx "make a docx titled Quarterly Report" | 3/3 | **3/3** |
+| create_docx "meeting notes" (under-specified) | 0/3 — asks for details, no call | **0/3 — hallucinated a broken recursive `run_code` (3/3 deterministic)** |
+| create_pptx "…project status with 3 slides" | 3/3 | **3/3** |
+| run_code "run python code that prints 42" | 6/6 | **3/3** |
+| none "what is the capital of France" | 3/3 | **3/3** |
+| **Total** | **15/18 = 83%** | **12/15 = 80%** |
+
+- **Decode speed:** 2.6B ~**107–115 tok/s** (agent-turn decode) vs 1.2B ~**215 tok/s** — still 2× over the 50 tok/s interactive bar.
+- **Full-registry probe (2.6B):** the agentic model over-triggers `web_search` — "meeting notes" → `web_search`+`recall`, "capital of France" → `web_search` (schema-valid, but the SYSTEM_PROMPT says to answer direct questions without tools). 60% on the same prompts with full tools; those are interpretation differences, not malformed calls.
+
+### Gate A decision (2026-08-19)
+
+- [x] 2.6B downloads, launches on the canonical flags (`--jinja`, `-c 128K`, `-fa on`), and emits a schema-valid `make_plan` tool-call turn through the real pipeline
+- [x] Full benchmark re-run recorded above
+- [x] **Default decision (per plan.md rule — switch default only if accuracy improves ≥ 83% AND tok/s ≥ 50): accuracy did NOT improve (80% < 83%), tok/s ~110 ≥ 50 → KEEP 1.2B as Windows default; 2.6B ships as OPT-IN** (`AGENT_CORE_MODEL=LFM2.5-2.6B` + `AGENT_CORE_MAX_CONTEXT_TOKENS=131072`)
+- [ ] 8B-A1B (Gate B): verify b10456 loads `lfm2moe`, then download + measure — pending

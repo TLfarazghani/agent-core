@@ -7,9 +7,10 @@ set "SERVER_PS=%~dp0windows\server_config.ps1"
 set "LLAMA_HEALTH=http://127.0.0.1:8001/health"
 set "WEB_HEALTH=http://127.0.0.1:8002/api/health"
 set "WEB_URL=http://127.0.0.1:8002"
+if "%AGENT_CORE_MODEL%"=="" set "AGENT_CORE_MODEL=LFM2.5-1.2B-Instruct"
 
 echo =============================================
-echo   agent-core launcher  -  LFM2.5 1.2B (local)
+echo   agent-core launcher  -  %AGENT_CORE_MODEL% (local)
 echo =============================================
 echo.
 
@@ -36,7 +37,7 @@ if "%UP%"=="1" (
     if "!UP!"=="1" goto llama_ok
   )
   echo [ERROR] llama-server did not come up on :8001 in 60s.
-  echo         Check vendor\llama\llama-server.exe and models\LFM2.5-1.2B-Instruct-Q4_K_M.gguf
+  echo         Check vendor\llama\llama-server.exe and the %AGENT_CORE_MODEL% GGUF in models\
   pause
   exit /b 1
 )

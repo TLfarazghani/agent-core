@@ -20,6 +20,17 @@ SESSION_DIR = Path.home() / ".agent-core" / "sessions"
 
 DEFAULT_MAX_TURNS = 8
 
+DEFAULT_MODEL = "LFM2.5-1.2B-Instruct"
+
+
+def default_model() -> str:
+    """Model alias for new sessions (Windows path).
+
+    Phase 7: selectable, not hardcoded. ``AGENT_CORE_MODEL`` (e.g.
+    ``LFM2.5-2.6B``) picks the model; defaults to the shipped 1.2B.
+    """
+    return os.environ.get("AGENT_CORE_MODEL", DEFAULT_MODEL)
+
 
 def default_max_turns() -> int:
     """Per-session turn budget for new sessions.
@@ -47,7 +58,11 @@ SYSTEM_PROMPT = (
     "When the user asks you to run code or create a file, you MUST call the "
     "matching tool. Do not ask for clarification or details first: if some "
     "arguments are missing, choose sensible defaults and proceed. "
-    "If the user just asks a question, answer directly without tools."
+    "If the user just asks a question, answer directly without tools. "
+    "For the current date/time, today, or any up-to-date fact, trust the "
+    "'Current date/time' line in your identity block (it comes from the "
+    "machine clock) and use web_search to confirm or find current information; "
+    "never invent a date or guess recent facts from memory."
 )
 
 
@@ -55,10 +70,11 @@ def new_agent_state(
     memory_dir: Path = MEMORY_DIR,
     recall_tokens: int = 512,
     max_turns: int | None = None,
+    model: str | None = None,
 ) -> AgentState:
     state = new_state(
         target="windows",
-        model="LFM2.5-1.2B-Instruct",
+        model=model if model is not None else default_model(),
         max_turns=max_turns if max_turns is not None else default_max_turns(),
     )
     state.messages.append(ChatMessage(role="system", content=SYSTEM_PROMPT))
@@ -68,6 +84,23 @@ def new_agent_state(
             ChatMessage(role="system", content=f"Prior knowledge:\n{recall}")
         )
     return state
+
+
+def refresh_agent_bio(state: AgentState, registry) -> None:
+    """Replace (or append) the identity-block system message with a fresh one.
+
+    Resumed sessions keep the original bio from disk, whose date/time can be
+    stale; calling this before resuming re-injects the current clock value.
+    """
+    from .meta import agent_bio
+
+    fresh = agent_bio(state, registry)
+    prefix = f"You are {AGENT_NAME}."
+    for i, message in enumerate(state.messages):
+        if message.role == "system" and message.content.startswith(prefix):
+            state.messages[i] = ChatMessage(role="system", content=fresh)
+            return
+    state.messages.append(ChatMessage(role="system", content=fresh))
 
 
 def session_path(session_id: str, session_dir: Path = SESSION_DIR) -> Path:

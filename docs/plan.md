@@ -211,15 +211,15 @@ The Windows shipped gate **PASSED 2026-08-17**, so this item moves out of scope-
 
 ### Plan
 
-- [ ] Make the model selectable, not hardcoded: `windows/server_config.ps1` takes the model path/alias/ctx as a parameter (env or arg, default 1.2B so nothing breaks); `core/sessions.py` `new_agent_state()` seeds `model` from the same source; `Core-agent.bat` label + error text updated
-- [ ] Download: `.venv\Scripts\hf.exe download LiquidAI/LFM2.5-2.6B-GGUF LFM2.5-2.6B-Q4_K_M.gguf --local-dir models`
-- [ ] Launch 2.6B on the canonical flags (`--jinja`, `-c 131072`, `-fa on`, `-ngl 99`, docs sampling); verify a `tool_calls` turn against the existing tool set
-- [ ] **Re-run the full benchmark suite** (`docs/benchmarks.md` §2 tool-call accuracy, §1 tok/s, incl. the previously-failing under-specified prompts) with 2.6B — this is the entire point: 1.2B fails deterministically on under-specified prompts; record 2.6B vs 1.2B side-by-side
-- [ ] Decide default on data: switch Windows default to 2.6B only if tool-call accuracy improves (≥ the 83% bar) and interactive tok/s stays ≥ 50; else keep 1.2B default and ship 2.6B as opt-in
-- [ ] Gate A: 2.6B measured and either defaulted or documented as opt-in
+- [x] Make the model selectable, not hardcoded: `windows/server_config.ps1` takes the model path/alias/ctx as a parameter (env or arg, default 1.2B so nothing breaks); `core/sessions.py` `new_agent_state()` seeds `model` from the same source; `Core-agent.bat` label + error text updated
+- [x] Download: `.venv\Scripts\hf.exe download LiquidAI/LFM2.5-2.6B-GGUF LFM2.5-2.6B-Q4_K_M.gguf --local-dir models` — **done 2026-08-19** (1.67GB)
+- [x] Launch 2.6B on the canonical flags (`--jinja`, `-c 131072`, `-fa on`, `-ngl 99`, docs sampling); verify a `tool_calls` turn against the existing tool set — **verified: `make_plan` with goal+3 steps emitted and executed**
+- [x] **Re-run the full benchmark suite** (`docs/benchmarks.md` §2 tool-call accuracy, §1 tok/s, incl. the previously-failing under-specified prompts) with 2.6B — **recorded 2026-08-19: 12/15 = 80% vs 1.2B 15/18 = 83%**; new script `benchmark_tool_accuracy.py` (minimal/full registry modes)
+- [x] Decide default on data: **KEEP 1.2B default** — 2.6B accuracy did not improve past the 83% bar (its under-specified-prompt failure is a deterministic hallucinated `run_code` instead of 1.2B's ask-for-clarification); tok/s ~110 ≥ 50. **2.6B ships as opt-in** (`AGENT_CORE_MODEL=LFM2.5-2.6B`, `AGENT_CORE_MAX_CONTEXT_TOKENS=131072`)
+- [x] Gate A: 2.6B measured and shipped as documented opt-in — **PASSED 2026-08-19**
 - [ ] 8B-A1B: verify current `vendor\llama` b10456 build loads `lfm2moe` (else bump the pinned prebuilt binary — still never build from source); download `LFM2.5-8B-A1B-Q4_K_M.gguf`; find the max ctx that fits 8GB VRAM; re-measure; ship as power-tier opt-in
 - [ ] Gate B: 8B-A1B runs on the same loop/tool set with `--jinja` tool calls; VRAM ceiling documented
-- [ ] Docs sync: `AGENTS.md` model/commands, `docs/plan.md`, `docs/benchmarks.md` pinned versions + measurements, `README.md` status table
+- [ ] Docs sync: `AGENTS.md` model/commands, `docs/plan.md`, `docs/benchmarks.md` pinned versions + measurements, `README.md` status table — **AGENTS.md/plan.md/benchmarks.md done 2026-08-19; README pending**
 
 ### Fourth target
 

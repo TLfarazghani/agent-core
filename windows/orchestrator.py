@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any, Callable
 
@@ -31,6 +32,21 @@ DEFAULT_REPETITION_PENALTY = 1.05
 DEFAULT_MAX_CONTEXT_TOKENS = 32768
 
 TokenSink = Callable[[str], None]
+
+
+def default_max_context_tokens() -> int:
+    """Context budget for the wire request (must match the server's ``--ctx-size``).
+
+    Phase 7: the 2.6B model runs at 128K ctx, so this must be selectable, not
+    hardcoded. ``AGENT_CORE_MAX_CONTEXT_TOKENS`` overrides the 32768 default.
+    """
+    raw = os.environ.get("AGENT_CORE_MAX_CONTEXT_TOKENS")
+    if raw is None:
+        return DEFAULT_MAX_CONTEXT_TOKENS
+    try:
+        return max(1024, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_CONTEXT_TOKENS
 
 
 def _to_openai_message(message: ChatMessage) -> dict[str, Any]:
@@ -109,7 +125,7 @@ class LlamaCppProvider:
         top_k: int = DEFAULT_TOP_K,
         top_p: float = DEFAULT_TOP_P,
         repetition_penalty: float = DEFAULT_REPETITION_PENALTY,
-        max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+        max_context_tokens: int | None = None,
         stream: bool = True,
         stream_callback: TokenSink | None = None,
     ) -> None:
@@ -119,7 +135,11 @@ class LlamaCppProvider:
         self.top_k = top_k
         self.top_p = top_p
         self.repetition_penalty = repetition_penalty
-        self.max_context_tokens = max_context_tokens
+        self.max_context_tokens = (
+            max_context_tokens
+            if max_context_tokens is not None
+            else default_max_context_tokens()
+        )
         self.stream = stream
         self.stream_callback = stream_callback
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120)

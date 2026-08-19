@@ -24,7 +24,7 @@ from .memory import (
     recall_memories,
     save_memory,
 )
-from .meta import AGENT_NAME, agent_bio, inspect_self
+from .meta import AGENT_NAME, agent_bio, current_time, inspect_self
 from .parser import (
     ParserError,
     extract_blocks,
@@ -64,6 +64,7 @@ __all__ = [
     "ToolDefinition",
     "ToolRegistry",
     "agent_bio",
+    "current_time",
     "estimate_message_tokens",
     "estimate_tokens",
     "extract_blocks",

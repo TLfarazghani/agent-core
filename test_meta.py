@@ -8,6 +8,7 @@ session/context/tool state through the registry. Runnable directly or via pytest
 from __future__ import annotations
 
 import json
+import re
 
 from core import (
     AGENT_NAME,
@@ -15,6 +16,7 @@ from core import (
     ToolCall,
     ToolRegistry,
     agent_bio,
+    current_time,
     estimate_tokens,
     inspect_self,
     new_state,
@@ -48,6 +50,31 @@ def test_bio_block_contains_identity_facts() -> None:
     assert "echo" in bio
     assert "inspect_self" in bio
     assert "turn budget" in bio.lower()
+
+
+def test_bio_block_carries_current_date() -> None:
+    registry = make_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    bio = agent_bio(state, registry)
+    assert re.search(r"Current date/time: \d{4}-\d{2}-\d{2} \d{2}:\d{2}", bio)
+    assert current_time() in bio
+
+
+def test_refresh_agent_bio_replaces_stale_date() -> None:
+    from core.sessions import refresh_agent_bio
+
+    registry = make_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    stale = agent_bio(state, registry).replace(
+        current_time(), "1999-12-31 23:59 UTC"
+    )
+    state.messages.append(
+        __import__("core", fromlist=["ChatMessage"]).ChatMessage(role="system", content=stale)
+    )
+    refresh_agent_bio(state, registry)
+    bio_messages = [m.content for m in state.messages if m.role == "system"]
+    assert any("1999-12-31" not in m and current_time() in m for m in bio_messages)
+    assert sum(1 for m in bio_messages if m.startswith("You are Agent Core.")) == 1
 
 
 def test_bio_reflects_live_tool_list() -> None:
