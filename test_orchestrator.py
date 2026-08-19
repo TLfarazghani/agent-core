@@ -154,6 +154,62 @@ def test_provider_renders_messages_in_order() -> None:
     assert request["extra_body"]["top_k"] == 50
 
 
+def test_provider_uses_model_specific_sampling() -> None:
+    """Phase 7: the OpenAI-style request must mirror each model's server_config
+    table sampling, not apply 1.2B's defaults to every model (measured: 8B-A1B's
+    run_code reliability collapses under 0.1/50/0.1)."""
+    from windows.orchestrator import LlamaCppProvider, default_sampling
+
+    assert default_sampling("LFM2.5-1.2B-Instruct") == (0.1, 50, 0.1, 1.05)
+    assert default_sampling("LFM2.5-2.6B") == (0.1, 50, 0.1, 1.1)
+    assert default_sampling("LFM2.5-8B-A1B") == (0.2, 80, 0.2, 1.05)
+    assert default_sampling("Some-Future-Model") == (0.1, 50, 0.1, 1.05)
+
+    class FakeChoice:
+        def __init__(self, message) -> None:
+            self.message = message
+
+    class FakeMessage:
+        def __init__(self, content="stub") -> None:
+            self.content = content
+
+    class FakeResponse:
+        usage = None
+        choices = [FakeChoice(FakeMessage("stub"))]
+
+    class FakeCompletions:
+        def __init__(self, client) -> None:
+            self.client = client
+
+        def create(self, **kwargs):
+            self.client.calls.append(kwargs)
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, client) -> None:
+            self.completions = FakeCompletions(client)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+            self.chat = FakeChat(self)
+
+    registry: TR = default_registry()
+    for model, expected in [
+        ("LFM2.5-2.6B", (0.1, 50, 0.1, 1.1)),
+        ("LFM2.5-8B-A1B", (0.2, 80, 0.2, 1.05)),
+    ]:
+        provider = LlamaCppProvider(registry=registry)
+        provider.client = FakeClient()
+        state = AgentState(target="windows", model=model, messages=[user_message("ping")])
+        provider(state)
+        request = provider.client.calls[0]
+        assert request["temperature"] == expected[0]
+        assert request["top_p"] == expected[2]
+        assert request["extra_body"]["top_k"] == expected[1]
+        assert request["extra_body"]["repetition_penalty"] == expected[3]
+
+
 def test_provider_trims_history_to_context_budget() -> None:
     """Long session: old turns are dropped before the request is built, but the
     last (in-flight) user turn is always sent."""

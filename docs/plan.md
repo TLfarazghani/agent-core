@@ -217,9 +217,9 @@ The Windows shipped gate **PASSED 2026-08-17**, so this item moves out of scope-
 - [x] **Re-run the full benchmark suite** (`docs/benchmarks.md` §2 tool-call accuracy, §1 tok/s, incl. the previously-failing under-specified prompts) with 2.6B — **recorded 2026-08-19: 12/15 = 80% vs 1.2B 15/18 = 83%**; new script `benchmark_tool_accuracy.py` (minimal/full registry modes)
 - [x] Decide default on data: **KEEP 1.2B default** — 2.6B accuracy did not improve past the 83% bar (its under-specified-prompt failure is a deterministic hallucinated `run_code` instead of 1.2B's ask-for-clarification); tok/s ~110 ≥ 50. **2.6B ships as opt-in** (`AGENT_CORE_MODEL=LFM2.5-2.6B`, `AGENT_CORE_MAX_CONTEXT_TOKENS=131072`)
 - [x] Gate A: 2.6B measured and shipped as documented opt-in — **PASSED 2026-08-19**
-- [ ] 8B-A1B: verify current `vendor\llama` b10456 build loads `lfm2moe` (else bump the pinned prebuilt binary — still never build from source); download `LFM2.5-8B-A1B-Q4_K_M.gguf`; find the max ctx that fits 8GB VRAM; re-measure; ship as power-tier opt-in
-- [ ] Gate B: 8B-A1B runs on the same loop/tool set with `--jinja` tool calls; VRAM ceiling documented
-- [ ] Docs sync: `AGENTS.md` model/commands, `docs/plan.md`, `docs/benchmarks.md` pinned versions + measurements, `README.md` status table — **AGENTS.md/plan.md/benchmarks.md done 2026-08-19; README pending**
+- [x] 8B-A1B: verify current `vendor\llama` b10456 build loads `lfm2moe` (else bump the pinned prebuilt binary — still never build from source); download `LFM2.5-8B-A1B-Q4_K_M.gguf`; find the max ctx that fits 8GB VRAM; re-measure; ship as power-tier opt-in — **DONE 2026-08-19**: `lfm2moe` compiled into `llama.dll` (no bump); Q4_K_M downloaded (5.16GB); **full 128K train ctx fits** (7740/8188 MiB, table `CtxSize` 32768→128000); tool-call acc **80%** @ ~150 tok/s; **shipped as power-tier opt-in**
+- [x] Gate B: 8B-A1B runs on the same loop/tool set with `--jinja` tool calls; VRAM ceiling documented — **PASSED 2026-08-19**. Side note: the OpenAI-style request overrides server sampling flags, so the orchestrator now mirrors each model's table sampling via `default_sampling(model)` (`SAMPLING_BY_MODEL`) — without it 8B-A1B's run_code collapsed to 0/5 (JSON-text calls), with it 5/5.
+- [x] Docs sync: `AGENTS.md` model/commands, `docs/plan.md`, `docs/benchmarks.md` pinned versions + measurements, `README.md` status table — **ALL DONE 2026-08-19**
 
 ### Fourth target
 

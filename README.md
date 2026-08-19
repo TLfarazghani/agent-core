@@ -22,9 +22,9 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 | 4 | Full cross-platform parity — Android + WebGPU ports | **Windows done**; WebGPU code written (unverified in a real browser); Android pending |
 | 5 | **Agent Core brain/self** — identity, cross-session memory, planning, reflection | **DONE** — `core/meta.py`, `core/memory.py`, `core/planner.py`, `core/reflection.py` + `tools/cognitive.py`; retry-once in the loop; JS parity (`web/memory.js`, `web/planner.js`) |
 | 6 | Context window — token budget so long/resumed sessions never exceed the model's window | **DONE** — `core/context.py` + `web/context.js`, wired into orchestrator + browser engine |
-| 7 | Second model — selectable 2.6B dense + 8B-A1B MoE | **Gate A PASSED 2026-08-19** — model selectable via `AGENT_CORE_MODEL` (env / `server_config.ps1 -Model` / `Core-agent.bat`), 2.6B benchmarked (80% tool-call acc, ~110 tok/s) and shipped as **opt-in** (1.2B stays default: 83% acc, ~215 tok/s); 8B-A1B pending (`benchmark_tool_accuracy.py`) |
+| 7 | Second model — selectable 2.6B dense + 8B-A1B MoE | **Gate B PASSED 2026-08-19** — model selectable via `AGENT_CORE_MODEL` (env / `server_config.ps1 -Model` / `Core-agent.bat`); client sampling auto-mirrors each model's table; 2.6B benchmarked (80%, ~110 tok/s) and 8B-A1B benchmarked (80%, ~150 tok/s, full 128K ctx in 8GB VRAM) → both **opt-in**, 1.2B stays default (83%, ~215 tok/s); `benchmark_tool_accuracy.py` |
 
-Test suites: core 21/21, networked 7/7, web search 8/8, doc-gen 9/9, run_code 8/8, orchestrator 11/11, web UI 18/18, JS engine 17/17, parser parity 4/4, context 12/12, memory 12/12, planner 9/9, meta 8/8, model-select 7/7. Verified live on llama-server (Phase 4 gate, ~215 tok/s 1.2B; 2.6B ~110 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
+Test suites: core 21/21, networked 7/7, web search 8/8, doc-gen 9/9, run_code 8/8, orchestrator 12/12, web UI 18/18, JS engine 17/17, parser parity 4/4, context 12/12, memory 12/12, planner 9/9, meta 8/8, model-select 7/7. Verified live on llama-server (Phase 4 gate, ~215 tok/s 1.2B; 2.6B ~110 tok/s; 8B-A1B ~150 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
 
 Build order is forced by dependency: Phase 3 (code execution) dispatches through the same loop Phase 0 builds.
 

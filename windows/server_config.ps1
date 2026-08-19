@@ -36,7 +36,7 @@ $models = @{
     }
     "LFM2.5-8B-A1B" = @{
         Gguf     = "models\LFM2.5-8B-A1B-Q4_K_M.gguf"
-        CtxSize  = 32768
+        CtxSize  = 128000
         Fa       = $true
         Temp     = 0.2
         TopK     = 80

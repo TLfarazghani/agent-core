@@ -57,11 +57,20 @@ def make_registry(kind: str) -> ToolRegistry:
     return registry
 
 
-def run_trial(prompt: str, registry: ToolRegistry) -> dict:
-    state = new_agent_state()
+def run_trial(prompt: str, registry: ToolRegistry, sampling: tuple | None, model: str) -> dict:
+    state = new_agent_state(model=model)
     state.messages.append(ChatMessage(role="system", content=agent_bio(state, registry)))
     state.messages.append(user_message(prompt))
-    provider = LlamaCppProvider(registry=registry, stream=False)
+    kwargs = {}
+    if sampling:
+        temp, top_k, top_p, repeat = sampling
+        kwargs = {
+            "temperature": temp,
+            "top_k": int(top_k),
+            "top_p": top_p,
+            "repetition_penalty": repeat,
+        }
+    provider = LlamaCppProvider(registry=registry, stream=False, **kwargs)
     step(state, provider, registry)
 
     calls = []
@@ -88,11 +97,38 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--registry", choices=["minimal", "full"], default="minimal")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="AgentState model id (default: AGENT_CORE_MODEL env / 1.2B). With "
+        "model-aware sampling in the orchestrator this selects the sampling table "
+        "entry; only the server's loaded model actually generates.",
+    )
+    parser.add_argument(
+        "--sampling",
+        type=str,
+        default=None,
+        help="comma list temperature,top_k,top_p,repetition_penalty "
+        "(default: the orchestrator's hardcoded 0.1,50,0.1,1.05)",
+    )
     args = parser.parse_args()
 
+    sampling = args.sampling
+    if sampling:
+        temp, top_k, top_p, repeat = (float(x) for x in sampling.split(","))
+        sampling_params: tuple | None = (temp, top_k, top_p, repeat)
+    else:
+        sampling_params = None
+
     registry = make_registry(args.registry)
+    model = args.model or os.environ.get("AGENT_CORE_MODEL") or "LFM2.5-1.2B-Instruct"
     tool_names = sorted(d.name for d in registry.definitions())
-    print(f"Benchmarking live llama-server, {args.trials} trials/prompt, tools: {tool_names}\n")
+    print(f"Benchmarking live llama-server, {args.trials} trials/prompt, model={model}, tools: {tool_names}")
+    if sampling:
+        temp, top_k, top_p, repeat = sampling_params
+        print(f"sampling: temp={temp} top_k={int(top_k)} top_p={top_p} repeat={repeat}")
+    print()
     rows = []
     for label, prompt, expected_name, args_ok in PROMPTS:
         correct = 0
@@ -101,7 +137,7 @@ def main() -> int:
         latency = 0.0
         samples = []
         for _ in range(args.trials):
-            r = run_trial(prompt, registry)
+            r = run_trial(prompt, registry, sampling_params, model)
             tokens += r["completion_tokens"]
             latency += r["latency_s"]
             called = r["call_names"]

@@ -11,6 +11,7 @@ Record exact versions for reproducibility — ports must reproduce the same mode
 | llama.cpp binary | `llama-b10456-bin-win-cuda-12.4-x64.zip` | 2026-08-17 |
 | GGUF | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` / `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` (697MB) | 2026-08-17 |
 | GGUF (2.6B, opt-in) | `LiquidAI/LFM2.5-2.6B-GGUF` / `LFM2.5-2.6B-Q4_K_M.gguf` (1.67GB) | 2026-08-19 |
+| GGUF (8B-A1B, opt-in) | `LiquidAI/LFM2.5-8B-A1B-GGUF` / `LFM2.5-8B-A1B-Q4_K_M.gguf` (5.16GB) | 2026-08-19 |
 | Python | 3.13.5 | |
 | pydantic | 2.13.4 | |
 | openai | 3.1.0 (v3 API — orchestrator must target v3, not the research doc's v1 sample) | |
@@ -112,4 +113,41 @@ Same harness as §1-2 above (`benchmark_tool_accuracy.py`), 2.6B Q4_K_M @ 128K c
 - [x] 2.6B downloads, launches on the canonical flags (`--jinja`, `-c 128K`, `-fa on`), and emits a schema-valid `make_plan` tool-call turn through the real pipeline
 - [x] Full benchmark re-run recorded above
 - [x] **Default decision (per plan.md rule — switch default only if accuracy improves ≥ 83% AND tok/s ≥ 50): accuracy did NOT improve (80% < 83%), tok/s ~110 ≥ 50 → KEEP 1.2B as Windows default; 2.6B ships as OPT-IN** (`AGENT_CORE_MODEL=LFM2.5-2.6B` + `AGENT_CORE_MAX_CONTEXT_TOKENS=131072`)
-- [ ] 8B-A1B (Gate B): verify b10456 loads `lfm2moe`, then download + measure — pending
+- [x] 8B-A1B (Gate B): verify b10456 loads `lfm2moe`, then download + measure — **PASSED, see §3 below**
+
+## Phase 7 — 8B-A1B MoE power tier (measured 2026-08-19)
+
+Same harness (`benchmark_tool_accuracy.py --model LFM2.5-8B-A1B`), 8B-A1B Q4_K_M (8.47B params, A1B active), **full 128K train ctx** on the 8GB 4060 Ti (7740/8188 MiB). b10456 verifies clean: `lfm2moe` arch is compiled into `llama.dll`.
+
+### VRAM ceiling
+
+| ctx | VRAM used | verdict |
+|---|---|---|
+| 32768 (initial table value) | 7117/8188 MiB | fits, ~1GB headroom |
+| 65536 | 7502/8188 MiB | fits |
+| **128000 (n_ctx_train)** | **7740/8188 MiB** | **fits — full context on 8GB** → table `CtxSize` updated 32768→128000 |
+
+### Sampling finding (fix shipped in the same gate)
+
+The OpenAI-style request always sends `temperature`/`top_k`/`top_p`/`repetition_penalty`, which **overrides the server-side table flags**. The orchestrator previously hardcoded 1.2B's sampling (0.1/50/0.1) for every model — under that, 8B-A1B scored **0/5 on run_code** (emitted the call as JSON text instead of native `tool_calls`). With its documented sampling (0.2/80/0.2/1.05) it scores **5/5**. Fix: `windows/orchestrator.default_sampling(model)` mirrors the server table per model (`SAMPLING_BY_MODEL`), falling back to 1.2B defaults; explicit constructor sampling still wins. Verified by `test_provider_uses_model_specific_sampling` and a live re-run.
+
+### Side-by-side tool-call accuracy (N=5/prompt, minimal registry, each model's own sampling)
+
+| Prompt | 1.2B (0.1/50/0.1) | 2.6B (0.1/50/0.1/1.1) | 8B-A1B (0.2/80/0.2) |
+|---|---|---|---|
+| create_docx "make a docx titled Quarterly Report" | 3/3 | 3/3 | **5/5** |
+| create_docx "meeting notes" (under-specified) | 0/3 no-call (asks) | 0/3 broken recursive run_code | **0/5 no-call ("I don't have any meeting notes saved")** |
+| create_pptx "…project status with 3 slides" | 3/3 | 3/3 | **5/5** |
+| run_code "run python code that prints 42" | 6/6 | 3/3 | **5/5** |
+| none "what is the capital of France" | 3/3 | 3/3 | **5/5** |
+| **Total** | **83%** | **80%** | **80%** |
+| **Decode tok/s** | **~215** | **~110** | **~145-165** |
+
+- **Full-registry probe (8B-A1B, N=3):** 11/15 = 73.3% — run_code 2/3. **No `web_search` over-trigger** (the 2.6B's failure): "capital of France" is answered directly 3/3 and under-specified "meeting notes" gets a polite no-call rather than a tool stampede.
+
+### Gate B decision (2026-08-19)
+
+- [x] b10456 loads `lfm2moe` (arch compiled into `llama.dll`; live `/v1/models` reports `n_params 8467856832`, `ftype Q4_K - Medium`)
+- [x] Runs on the same loop/tool set with `--jinja` native `tool_calls` end-to-end
+- [x] VRAM ceiling documented (full 128K ctx on 8GB); tool-call acc 80% (~the plan's ~80% estimate), tok/s ~150 ≥ 50
+- [x] Ship as **power-tier opt-in**: `AGENT_CORE_MODEL=LFM2.5-8B-A1B` (128K ctx, client sampling auto-mirrors the table). 1.2B stays default — 8B-A1B's under-specified-prompt failure (no-call) is friendlier than 2.6B's, but its well-specified accuracy ties 2.6B at 80% < 1.2B's 83% and costs 5.16GB on disk.

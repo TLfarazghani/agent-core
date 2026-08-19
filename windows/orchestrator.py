@@ -49,6 +49,25 @@ def default_max_context_tokens() -> int:
         return DEFAULT_MAX_CONTEXT_TOKENS
 
 
+# Per-model sampling that mirrors the server_config.ps1 table. The OpenAI-style
+# request always carries temperature/top_k/top_p/repetition_penalty, which would
+# otherwise override the server-side flags and silently apply 1.2B's sampling to
+# every model (measured: 8B-A1B's run_code reliability collapses under 0.1/50/0.1).
+SAMPLING_BY_MODEL = {
+    "LFM2.5-1.2B-Instruct": (0.1, 50, 0.1, 1.05),
+    "LFM2.5-2.6B": (0.1, 50, 0.1, 1.1),
+    "LFM2.5-8B-A1B": (0.2, 80, 0.2, 1.05),
+}
+
+
+def default_sampling(model: str) -> tuple[float, int, float, float]:
+    """(temperature, top_k, top_p, repetition_penalty) for a model, falling back
+    to the 1.2B defaults for unknown models."""
+    return SAMPLING_BY_MODEL.get(
+        model, (DEFAULT_TEMPERATURE, DEFAULT_TOP_K, DEFAULT_TOP_P, DEFAULT_REPETITION_PENALTY)
+    )
+
+
 def _to_openai_message(message: ChatMessage) -> dict[str, Any]:
     """Map one core ``ChatMessage`` to the OpenAI request shape."""
     if message.role == "assistant" and message.function_calls:
@@ -145,6 +164,13 @@ class LlamaCppProvider:
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120)
         self.last_usage: dict[str, int] = {}
         self.last_latency_s: float = 0.0
+        explicit = (temperature, top_k, top_p, repetition_penalty) != (
+            DEFAULT_TEMPERATURE,
+            DEFAULT_TOP_K,
+            DEFAULT_TOP_P,
+            DEFAULT_REPETITION_PENALTY,
+        )
+        self._sampling = explicit or None
 
     def __call__(self, state: AgentState) -> ChatMessage:
         kept, dropped = trim_to_budget(state.messages, self.max_context_tokens)
@@ -156,16 +182,20 @@ class LlamaCppProvider:
             )
         messages = [_to_openai_message(message) for message in kept]
         tools = _to_openai_tools(self.registry)
+        if self._sampling is None:
+            temperature, top_k, top_p, repeat = default_sampling(state.model)
+        else:
+            temperature, top_k, top_p, repeat = self._sampling
         kwargs: dict[str, Any] = {
             "model": state.model,
             "messages": messages,
             "tools": tools,
-            "temperature": self.temperature,
+            "temperature": temperature,
             "max_tokens": self.max_tokens,
-            "top_p": self.top_p,
+            "top_p": top_p,
             "extra_body": {
-                "top_k": self.top_k,
-                "repetition_penalty": self.repetition_penalty,
+                "top_k": top_k,
+                "repetition_penalty": repeat,
             },
         }
 
