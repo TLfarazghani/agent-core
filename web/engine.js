@@ -7,6 +7,8 @@
  * and only produces assistant text; tool-call extraction is done through the
  * injected parser (web/parser.js, the line-for-line port of core/parser.py);
  * dispatch + the approval gate are implemented here, never model-decided.
+ * Before each generate call the message history is trimmed to the model's
+ * context budget via web/context.js (the JS port of core/context.py).
  *
  * Testable in Node with a fake provider (see test_webgpu_engine.mjs).
  *
@@ -21,6 +23,13 @@
  * `tools` is a map: name -> { requires_approval, run(arguments) -> Promise<string> }
  */
 
+import { trimToBudget } from "./context.js";
+
+const DEFAULT_MAX_CONTEXT_TOKENS = 32768;
+/* Retry-once: mirrors core/loop.RETRY_ONCE_LIMIT. Never auto-retries a
+ * rejected call (resolveApproval(false) stays the only way through). */
+const RETRY_ONCE_LIMIT = 1;
+
 function newState({ session_id, model, max_turns = 8 }) {
   return {
     session_id: session_id || "browser-" + Math.random().toString(36).slice(2, 10),
@@ -31,6 +40,8 @@ function newState({ session_id, model, max_turns = 8 }) {
     turn_count: 0,
     pending_approval: null,
     pending_calls: [],
+    retry_count: 0,
+    plan: null,
   };
 }
 
@@ -38,7 +49,7 @@ function lastMessage(state) {
   return state.messages.length ? state.messages[state.messages.length - 1] : null;
 }
 
-function createEngine({ provider, tools, parser, session_id, model, max_turns = 8, events = null }) {
+function createEngine({ provider, tools, parser, session_id, model, max_turns = 8, max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS, events = null, memory = null }) {
   const state = newState({ session_id, model, max_turns });
   let emitting = events;
 
@@ -59,10 +70,47 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
     return last !== null && last.role === "assistant" && !(last.function_calls || []).length;
   }
 
+  /* Mirrors core/reflection.lesson_from_state. */
+  function lessonFromState() {
+    if (state.retry_count > 0) {
+      return "Lesson: a tool call failed; retry exactly once with corrected arguments, then give up cleanly.";
+    }
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      const m = state.messages[i];
+      if (m.role === "tool" && m.content === "rejected by user") {
+        return "Lesson: the user rejected a tool call; never retry a rejected call.";
+      }
+      if (m.role === "tool" && typeof m.content === "string" && m.content.startsWith("error")) {
+        return "Lesson: a tool call errored; check its arguments and results before calling again.";
+      }
+    }
+    return null;
+  }
+
+  /* Mirrors core/loop.finalize_turn. Bounded; never blocks the loop. */
+  function finalizeLesson() {
+    const lesson = lessonFromState();
+    if (!lesson) return;
+    if (memory && typeof memory.saveMemory === "function") {
+      try {
+        memory.saveMemory({
+          key: `lesson_${Date.now()}`,
+          content: lesson,
+          kind: "lesson",
+          source_session: state.session_id,
+        });
+        emit("lesson", { lesson });
+      } catch (_) {
+        /* reflection must never break the turn */
+      }
+    }
+  }
+
   async function dispatch(call) {
     const tool = tools[call.name];
     if (!tool) {
       const content = `error: unknown tool '${call.name}'`;
+      state.retry_count += 1;
       append({ role: "tool", tool_call_id: call.id, content });
       emit("tool_result", { call_id: call.id, content, error: true });
       return;
@@ -83,11 +131,14 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
     let content;
     let error = false;
     try {
-      content = await tool.run(call.arguments || {});
+      content = tool.stateful
+        ? await tool.run(state, call.arguments || {})
+        : await tool.run(call.arguments || {});
     } catch (err) {
       content = `error: ${err && err.message ? err.message : String(err)}`;
       error = true;
     }
+    if (error || String(content).startsWith("error")) state.retry_count += 1;
     append({ role: "tool", tool_call_id: call.id, content });
     emit("tool_result", { call_id: call.id, content, error });
   }
@@ -99,7 +150,10 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
       emit("error", { message: "Turn budget reached. Start a new session." });
       return;
     }
-    const assistant = await provider.generate(state.messages, (text) =>
+    const lastBefore = state.messages[state.messages.length - 1];
+    if (lastBefore && lastBefore.role === "user") state.retry_count = 0;
+    const trimmed = trimToBudget(state.messages, max_context_tokens);
+    const assistant = await provider.generate(trimmed.kept, (text) =>
       emit("token", { text })
     );
     const function_calls = parser.parse_tool_calls(assistant.content || "");
@@ -118,8 +172,8 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
     }
   }
 
-  /* Drive until terminal / approval / turn cap. Mirrors core/loop.run plus
-   * the web server's turn-cap error event. */
+  /* Drive until terminal / approval / turn cap / retry-once give-up.
+   * Mirrors core/loop.run plus the web server's turn-cap error event. */
   async function start(events) {
     if (events) setEmitter(events);
     while (true) {
@@ -128,7 +182,13 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
         emit("error", { message: "Turn budget reached. Start a new session." });
         return state;
       }
+      if (state.retry_count > RETRY_ONCE_LIMIT) {
+        finalizeLesson();
+        emit("done", { state: JSON.parse(JSON.stringify(state)) });
+        return state;
+      }
       if (isTerminal()) {
+        finalizeLesson();
         emit("done", { state: JSON.parse(JSON.stringify(state)) });
         return state;
       }

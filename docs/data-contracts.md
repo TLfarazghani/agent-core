@@ -71,7 +71,9 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "max_turns": 8,
   "turn_count": 0,
   "pending_approval": null,
-  "pending_calls": []
+  "pending_calls": [],
+  "retry_count": 0,
+  "plan": null
 }
 ```
 
@@ -81,12 +83,14 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 | `target` | enum | `windows`, `android`, `webgpu` |
 | `model` | string | model identifier for the provider |
 | `messages` | array of ChatMessage | the full conversation history |
-| `max_turns` | int | loop cap, default 8 |
+| `max_turns` | int | per-session loop cap, default 8; overridable per session via `AGENT_CORE_MAX_TURNS` env var (new sessions) or `POST /api/sessions {"max_turns": N}` / CLI `/turns <n>`; serialized with the session so it survives resume |
 | `turn_count` | int | incremented by the loop each generate+execute cycle |
 | `pending_approval` | object \| null | `{ "call_id", "tool_name", "arguments" }`; non-null exactly when a `requires_approval` call is waiting on a human |
 | `pending_calls` | array of ToolCall | remaining tool calls of the current turn parked behind `pending_approval`; resumed in order by `resolve_approval()` |
+| `retry_count` | int | consecutive tool failures in the current user turn (reset on each new user message); retry-once stops the loop past `RETRY_ONCE_LIMIT` (1) |
+| `plan` | object \| null | `{ "goal", "steps": [{ "id", "description", "status": "pending\|in_progress\|done\|failed\|skipped", "result" }] }`; explicit multi-step task tracking (Phase 5) |
 
-`pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention. `pending_calls` exists so multi-call turns like `[run_code, echo]` don't silently drop the calls after the approval-gated one.
+`pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention. `pending_calls` exists so multi-call turns like `[run_code, echo]` don't silently drop the calls after the approval-gated one. Plan steps are bookkeeping only — every step that calls a tool still hits the hardcoded approval gate independently; there is **no plan-based approval bypass**.
 
 ## Tool contracts by category
 
@@ -133,6 +137,18 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "requires_approval": true
 }
 ```
+
+**Cognitive (Phase 5) — identity, memory, planning. All `requires_approval: false`; handlers are state-aware (`takes_state`), invoked as `handler(state, arguments)`. Stored memory lives at `~/.agent-core/memory/` (same traversal guard as sessions):**
+
+```json
+{ "name": "inspect_self", "parameters": {} }
+{ "name": "remember", "parameters": { "key": "string", "content": "string", "kind": "fact|preference|lesson|session_summary?" } }
+{ "name": "recall", "parameters": { "topic": "string?", "limit": "integer? 1-20" } }
+{ "name": "make_plan", "parameters": { "goal": "string", "steps": "string[]" } }
+{ "name": "update_plan", "parameters": { "step_id": "string", "status": "pending|in_progress|done|failed|skipped", "result": "string?" } }
+```
+
+Memory entry record: `{ "key", "content", "kind", "created_at", "source_session" }` — one JSON file per key. `new_agent_state()` seeds each session with a bounded recall (`~512` tokens, newest first) so knowledge survives CLI ↔ web resumes. `make_plan`/`update_plan` never bypass the approval gate: each plan step that calls a tool still hits the hardcoded gate in `dispatch()`.
 
 ## Enforcement
 

@@ -21,6 +21,12 @@ _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 
 ToolHandler = Callable[[dict[str, Any]], str]
 
+# Handlers that need the live AgentState (the cognitive tools) mark themselves
+# with ``takes_state = True`` and are invoked as ``handler(state, arguments)``.
+def takes_state(handler: Callable) -> Callable:
+    handler.takes_state = True  # type: ignore[attr-defined]
+    return handler
+
 
 def _load_schema(name: str) -> dict:
     with (_SCHEMA_DIR / name).open(encoding="utf-8") as fh:
@@ -117,13 +123,14 @@ class ToolRegistry:
                 call_id=call.id, tool_name=call.name, arguments=call.arguments
             )
             return None
-        return self.execute(call)
+        return self.execute(call, state)
 
-    def execute(self, call: ToolCall) -> ChatMessage:
+    def execute(self, call: ToolCall, state: AgentState | None = None) -> ChatMessage:
         """Run ``call`` regardless of approval flag.
 
         Used by ``loop.resolve_approval`` on ``approved=True``. Validation of
-        the tool's arguments against its JSON Schema is applied here.
+        the tool's arguments against its JSON Schema is applied here. State-
+        aware handlers (``takes_state``) receive ``(state, arguments)``.
         """
         definition = self._definitions.get(call.name)
         if definition is None:
@@ -135,8 +142,18 @@ class ToolRegistry:
         invalid = self._validate_call(call, definition)
         if invalid is not None:
             return ChatMessage(role="tool", tool_call_id=call.id, content=invalid)
+        handler = self._handlers[call.name]
         try:
-            result = self._handlers[call.name](call.arguments)
+            if getattr(handler, "takes_state", False):
+                if state is None:
+                    return ChatMessage(
+                        role="tool",
+                        tool_call_id=call.id,
+                        content="error: this tool requires a live session state",
+                    )
+                result = handler(state, call.arguments)
+            else:
+                result = handler(call.arguments)
         except Exception as exc:  # noqa: BLE001 - surface handler errors as tool results
             result = f"error: {type(exc).__name__}: {exc}"
         return ChatMessage(role="tool", tool_call_id=call.id, content=result)

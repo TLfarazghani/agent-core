@@ -170,5 +170,73 @@
       },
       "required": ["title", "slides"]
     }
+  },
+  {
+    "name": "inspect_self",
+    "description": "Return a live snapshot of the agent: name, session id, target, model, turn budget, estimated context usage, pending approval, current plan, and available tools. Does not require approval.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "remember",
+    "description": "Save a fact, preference, or lesson to long-term memory so it persists across sessions. kind is one of: fact, preference, lesson, session_summary.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "content": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["fact", "preference", "lesson", "session_summary"] }
+      },
+      "required": ["key", "content"]
+    }
+  },
+  {
+    "name": "recall",
+    "description": "Search long-term memory for entries matching a topic. Empty topic recalls the most recent memories.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "topic": { "type": "string" },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "make_plan",
+    "description": "Set an explicit multi-step plan for the current task (goal + ordered step descriptions). Each step that calls a tool still requires normal approval. Does not require approval itself.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "steps": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        }
+      },
+      "required": ["goal", "steps"]
+    }
+  },
+  {
+    "name": "update_plan",
+    "description": "Mark a plan step as in_progress, done, failed, or skipped (optionally with a short result).",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "step_id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "done", "failed", "skipped"] },
+        "result": { "type": "string" }
+      },
+      "required": ["step_id", "status"]
+    }
   }
 ]

@@ -173,6 +173,40 @@ body {
 
 .tool-card .tool-result.error { color: var(--error); }
 
+/* ---------- plan card (Phase 5) ---------- */
+.plan-card {
+  align-self: flex-start;
+  width: 72%;
+  background: var(--tool);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.plan-card .plan-head {
+  padding: 6px 10px;
+  color: var(--muted);
+  background: var(--panel-2);
+  font-weight: 600;
+  font-family: var(--sans);
+}
+
+.plan-card .plan-step {
+  padding: 4px 10px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  border-top: 1px solid var(--border);
+}
+
+.plan-card .plan-step.done { color: var(--muted); }
+.plan-card .plan-step.failed { color: var(--error); }
+.plan-card .plan-step.in_progress { color: var(--amber); }
+
 /* ---------- approval modal ---------- */
 .modal {
   position: fixed;
@@ -244,6 +278,26 @@ body {
 #session-actions {
   display: flex;
   gap: 8px;
+}
+
+#turn-setting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#max-turns-input {
+  width: 64px;
+  padding: 2px 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 #transport-toggle {

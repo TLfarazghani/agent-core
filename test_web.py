@@ -395,6 +395,58 @@ def test_unknown_session_404() -> None:
         server.stop()
 
 
+def test_session_max_turns_setting() -> None:
+    """max_turns is a per-session setting: set at creation, preserved by clear,
+    and rejected when invalid."""
+    server = _TestServer()
+    try:
+        def create(body: bytes) -> dict:
+            import urllib.request as ur
+
+            def do():
+                request = ur.Request(server.url("/api/sessions"), data=body, method="POST")
+                with ur.urlopen(request, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            return _retry_transport(do)
+
+        session_id = create(b'{"max_turns": 16}')["session_id"]
+        assert server.get(f"/api/sessions/{session_id}")["state"]["max_turns"] == 16
+
+        def clear() -> dict:
+            def do():
+                request = urllib.request.Request(
+                    server.url(f"/api/sessions/{session_id}/clear"), data=b"{}", method="POST"
+                )
+                with urllib.request.urlopen(request, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            return _retry_transport(do)
+
+        cleared = clear()
+        assert cleared["state"]["max_turns"] == 16
+
+        try:
+            def bad(body: bytes) -> None:
+                request = urllib.request.Request(
+                    server.url("/api/sessions"), data=body, method="POST"
+                )
+                urllib.request.urlopen(request, timeout=10)
+
+            bad(b'{"max_turns": "abc"}')
+            assert False, "expected 400 for invalid max_turns"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+
+        try:
+            bad(b'{"max_turns": 0}')
+            assert False, "expected 400 for max_turns below 1"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+    finally:
+        server.stop()
+
+
 def test_clear_resets_history_keeps_session() -> None:
     server = _TestServer()
     try:
@@ -443,6 +495,31 @@ def test_delete_session() -> None:
             assert False, "expected 404 after delete"
         except urllib.error.HTTPError as exc:
             assert exc.code == 404
+    finally:
+        server.stop()
+
+
+def test_delete_all_sessions() -> None:
+    server = _TestServer()
+    try:
+        ids = [_create_session(server) for _ in range(3)]
+        for session_id in ids:
+            assert server.get(f"/api/sessions/{session_id}")["state"]["session_id"] == session_id
+
+        def delete_all() -> dict:
+            request = urllib.request.Request(server.url("/api/sessions"), method="DELETE")
+            with urllib.request.urlopen(request, timeout=10) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        deleted = _retry_transport(delete_all)
+        assert deleted["deleted"] >= 3
+        for session_id in ids:
+            try:
+                server.get(f"/api/sessions/{session_id}")
+                assert False, "expected 404 after delete all"
+            except urllib.error.HTTPError as exc:
+                assert exc.code == 404
+        assert server.get("/api/sessions")["sessions"] == []
     finally:
         server.stop()
 

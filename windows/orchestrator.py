@@ -10,12 +10,16 @@ the approval gate — it implements ``core.loop.GenerateProvider``.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any, Callable
 
 from openai import OpenAI
 
 from core import AgentState, ChatMessage, ToolCall, ToolRegistry
+from core.context import trim_to_budget
+
+logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = "local-no-key-required"
 DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
@@ -24,6 +28,7 @@ DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TOP_K = 50
 DEFAULT_TOP_P = 0.1
 DEFAULT_REPETITION_PENALTY = 1.05
+DEFAULT_MAX_CONTEXT_TOKENS = 32768
 
 TokenSink = Callable[[str], None]
 
@@ -104,6 +109,7 @@ class LlamaCppProvider:
         top_k: int = DEFAULT_TOP_K,
         top_p: float = DEFAULT_TOP_P,
         repetition_penalty: float = DEFAULT_REPETITION_PENALTY,
+        max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
         stream: bool = True,
         stream_callback: TokenSink | None = None,
     ) -> None:
@@ -113,6 +119,7 @@ class LlamaCppProvider:
         self.top_k = top_k
         self.top_p = top_p
         self.repetition_penalty = repetition_penalty
+        self.max_context_tokens = max_context_tokens
         self.stream = stream
         self.stream_callback = stream_callback
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120)
@@ -120,7 +127,14 @@ class LlamaCppProvider:
         self.last_latency_s: float = 0.0
 
     def __call__(self, state: AgentState) -> ChatMessage:
-        messages = [_to_openai_message(message) for message in state.messages]
+        kept, dropped = trim_to_budget(state.messages, self.max_context_tokens)
+        if dropped:
+            logger.info(
+                "trimmed %d old message(s) to fit %d-token context budget",
+                len(dropped),
+                self.max_context_tokens,
+            )
+        messages = [_to_openai_message(message) for message in kept]
         tools = _to_openai_tools(self.registry)
         kwargs: dict[str, Any] = {
             "model": state.model,
@@ -140,6 +154,7 @@ class LlamaCppProvider:
             response = self.client.chat.completions.create(**kwargs)
             self.last_latency_s = time.monotonic() - started
             self.last_usage = response.usage.model_dump() if response.usage else {}
+            self._warn_on_overflow()
             return _from_openai_message(response.choices[0].message)
 
         content_parts: list[str] = []
@@ -172,6 +187,8 @@ class LlamaCppProvider:
                         order.append(index)
         self.last_latency_s = time.monotonic() - started
 
+        self._warn_on_overflow()
+
         function_calls = None
         if tool_calls:
             function_calls = [
@@ -189,10 +206,27 @@ class LlamaCppProvider:
             function_calls=function_calls,
         )
 
+    def _warn_on_overflow(self) -> None:
+        """Ground-truth check: llama-server reports real ``prompt_tokens``.
+
+        The chars/4 trim heuristic is an estimate; if the actual prompt still
+        overflows the budget, log it so a too-aggressive heuristic is visible
+        instead of silently corrupting long sessions.
+        """
+        prompt_tokens = self.last_usage.get("prompt_tokens")
+        if prompt_tokens and prompt_tokens > self.max_context_tokens:
+            logger.warning(
+                "prompt is %d tokens but context budget is %d — chars/4 estimate "
+                "under-counted; consider raising max_context_tokens",
+                prompt_tokens,
+                self.max_context_tokens,
+            )
+
 
 def default_registry() -> ToolRegistry:
-    """Full local registry (web search + doc-gen + run_code)."""
+    """Full local registry (web search + doc-gen + run_code + cognitive)."""
     from tools import (
+        register_cognitive_tools,
         register_docgen_tools,
         register_runcode_tool,
         register_web_tools,
@@ -202,4 +236,5 @@ def default_registry() -> ToolRegistry:
     register_web_tools(registry)
     register_docgen_tools(registry)
     register_runcode_tool(registry)
+    register_cognitive_tools(registry)
     return registry

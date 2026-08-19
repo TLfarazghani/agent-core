@@ -20,8 +20,10 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 | 2 | Local doc-gen — docx/pptx, 3 platform-specific backends | **DONE** — Windows backend shipped |
 | 3 | Code execution + sandbox — Docker / Pyodide, approval-gated | **DONE** — Windows Docker shipped; browser Pyodide written (needs live WebGPU verification) |
 | 4 | Full cross-platform parity — Android + WebGPU ports | **Windows done**; WebGPU code written (unverified in a real browser); Android pending |
+| 5 | **Agent Core brain/self** — identity, cross-session memory, planning, reflection | **DONE** — `core/meta.py`, `core/memory.py`, `core/planner.py`, `core/reflection.py` + `tools/cognitive.py`; retry-once in the loop; JS parity (`web/memory.js`, `web/planner.js`) |
+| 6 | Context window — token budget so long/resumed sessions never exceed the model's window | **DONE** — `core/context.py` + `web/context.js`, wired into orchestrator + browser engine |
 
-Test suites: core 13/13, networked 7/7, web search 8/8, doc-gen 9/9, run_code 8/8, orchestrator 9/9, web UI 14/14, JS engine 7/7, parser parity 4/4. Verified live on llama-server (Phase 4 gate, ~215 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
+Test suites: core 21/21, networked 7/7, web search 8/8, doc-gen 9/9, run_code 8/8, orchestrator 11/11, web UI 18/18, JS engine 17/17, parser parity 4/4, context 12/12, memory 12/12, planner 9/9, meta 6/6. Verified live on llama-server (Phase 4 gate, ~215 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
 
 Build order is forced by dependency: Phase 3 (code execution) dispatches through the same loop Phase 0 builds.
 

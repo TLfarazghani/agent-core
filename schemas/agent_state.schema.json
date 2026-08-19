@@ -36,6 +36,37 @@
       "type": "array",
       "items": { "$ref": "chat_message.schema.json#/$defs/toolCall" },
       "description": "Tool calls from the current turn parked behind a pending_approval; resumed by resolve_approval."
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Consecutive tool failures in the current user turn; retry-once stops the loop past the limit."
+    },
+    "plan": {
+      "type": ["object", "null"],
+      "default": null,
+      "description": "Explicit multi-step task plan. Step tools still hit the hardcoded approval gate independently.",
+      "required": ["goal", "steps"],
+      "properties": {
+        "goal": { "type": "string" },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" },
+              "status": {
+                "enum": ["pending", "in_progress", "done", "failed", "skipped"],
+                "default": "pending"
+              },
+              "result": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
     }
   }
 }

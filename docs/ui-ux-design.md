@@ -137,7 +137,12 @@ $ agent
 6. Safety: **Enter does not approve.** Approve requires an explicit click/tap (or `Ctrl+Enter` when focus is on the approve button). Keyboard shortcut `a` = approve, `r` = reject, visible in the card.
 
 **Turn cap:**
+- `max_turns` is a **per-session setting**, not a global constant. New sessions default to 8 (or `AGENT_CORE_MAX_TURNS` env var); the web sidebar's **turn budget** input applies to the next created/cleared session and the CLI's `/turns <n>` sets the current session. The value serializes with `AgentState`, so a resumed session keeps its budget.
 - When `turn_count` reaches `max_turns`, the composer shows "Turn budget reached" and offers **New session**. The history stays viewable.
+
+**Plan card (Phase 5):**
+- When `AgentState.plan` is set, both UIs render a plan block above the message flow: goal + one row per step with its status marker (`·` pending / `▶` in_progress / `✓` done / `✗` failed / `−` skipped) and any per-step result. CLI prints it after each turn; the web UI renders it in `renderMessages`.
+- **Turn budget vs plan length:** each plan step is bookkeeping only. A step that calls a tool still hits the hardcoded approval gate independently (no plan-based approval bypass), and every generate+execute cycle consumes a turn — so a plan longer than `max_turns` will be interrupted by the turn cap and must be resumed in a new session. UIs surface `turn_count/max_turns` so a long plan's progress is visible before the cap hits.
 
 ### 2.4 States
 

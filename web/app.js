@@ -22,7 +22,9 @@ const els = {
   newSession: $("new-session"),
   clearSession: $("clear-session"),
   deleteSession: $("delete-session"),
+  deleteAllSessions: $("delete-all-sessions"),
   turnCounter: $("turn-counter"),
+  maxTurnsInput: $("max-turns-input"),
   modal: $("approval-modal"),
   approvalTool: $("approval-tool"),
   approvalArgs: $("approval-args"),
@@ -92,6 +94,7 @@ function appendElement(tag, cls, text) {
 function renderMessages(agentState) {
   els.messages.innerHTML = "";
   state.agentState = agentState;
+  renderPlan(agentState);
   const pendingCards = new Map();
   for (const message of agentState.messages || []) {
     if (message.role === "system") continue;
@@ -127,6 +130,32 @@ function renderToolCard(call) {
   return card;
 }
 
+function renderPlan(agentState) {
+  const plan = agentState.plan;
+  if (!plan) return;
+  const box = document.createElement("div");
+  box.className = "plan-card";
+  const head = document.createElement("div");
+  head.className = "plan-head";
+  head.textContent = "\u27e6 plan \u27e7 " + plan.goal;
+  box.appendChild(head);
+  const markers = {
+    done: "\u2713",
+    in_progress: "\u25b6",
+    failed: "\u2717",
+    pending: "\u00b7",
+    skipped: "\u2212",
+  };
+  for (const step of plan.steps) {
+    const row = document.createElement("div");
+    row.className = "plan-step " + (step.status || "pending");
+    row.textContent = (markers[step.status] || "\u00b7") + " " + step.id + " " + step.description;
+    if (step.result) row.textContent += " \u2014 " + step.result;
+    box.appendChild(row);
+  }
+  els.messages.appendChild(box);
+}
+
 function setToolResult(card, content) {
   const result = document.createElement("div");
   result.className = "tool-result" + (content.startsWith("error") ? " error" : "");
@@ -152,6 +181,7 @@ function setBusy(busy) {
   els.send.disabled = busy;
   els.clearSession.disabled = busy;
   els.deleteSession.disabled = busy;
+  els.deleteAllSessions.disabled = busy;
 }
 
 function showApproval(data) {
@@ -288,21 +318,35 @@ async function selectSession(id) {
     const { state: agentState } = await fetchJSON(`/api/sessions/${id}`);
     state.sessionId = id;
     renderMessages(agentState);
+    els.maxTurnsInput.value = agentState.max_turns;
     refreshSessions();
   } catch (err) {
     appendElement("div", "msg error", "could not load session: " + err.message);
   }
 }
 
+function sessionTurnBudget() {
+  const raw = els.maxTurnsInput.value.trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return null;
+  return value;
+}
+
 async function createSession() {
   hideApproval();
+  const maxTurns = sessionTurnBudget();
   if (state.transport === "browser") {
     if (!browserWorker) startBrowserWorker();
-    browserWorker.postMessage({ type: "reset" });
+    browserWorker.postMessage({ type: "reset", max_turns: maxTurns });
     return;
   }
   try {
-    const { session_id } = await fetchJSON("/api/sessions", { method: "POST" });
+    const { session_id } = await fetchJSON("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(maxTurns === null ? {} : { max_turns: maxTurns }),
+    });
     state.sessionId = session_id;
     els.messages.innerHTML = "";
     updateTurnCounter();
@@ -316,14 +360,17 @@ async function createSession() {
 async function clearSession() {
   if (state.streaming || state.pendingApproval) return;
   if (!confirm("Clear the chat history of this session?")) return;
+  const maxTurns = sessionTurnBudget();
   if (state.transport === "browser") {
-    browserWorker.postMessage({ type: "reset" });
+    browserWorker.postMessage({ type: "reset", max_turns: maxTurns });
     return;
   }
   if (!state.sessionId) return;
   try {
     const { state: agentState } = await fetchJSON(`/api/sessions/${state.sessionId}/clear`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(maxTurns === null ? {} : { max_turns: maxTurns }),
     });
     renderMessages(agentState);
     refreshSessions();
@@ -346,6 +393,21 @@ async function deleteCurrentSession() {
     await createSession();
   } catch (err) {
     appendElement("div", "msg error", "could not delete session: " + err.message);
+  }
+}
+
+async function deleteAllSessions() {
+  if (state.streaming || state.pendingApproval) return;
+  if (state.transport === "browser") {
+    clearSession();
+    return;
+  }
+  if (!confirm("Delete ALL sessions permanently?")) return;
+  try {
+    await fetchJSON("/api/sessions", { method: "DELETE" });
+    await createSession();
+  } catch (err) {
+    appendElement("div", "msg error", "could not delete all sessions: " + err.message);
   }
 }
 
@@ -412,6 +474,7 @@ els.input.addEventListener("keydown", (e) => {
 els.newSession.addEventListener("click", createSession);
 els.clearSession.addEventListener("click", clearSession);
 els.deleteSession.addEventListener("click", deleteCurrentSession);
+els.deleteAllSessions.addEventListener("click", deleteAllSessions);
 els.approve.addEventListener("click", () => approveAction(true));
 els.reject.addEventListener("click", () => approveAction(false));
 els.transportServer.addEventListener("click", () => setTransport("server"));

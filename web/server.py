@@ -16,8 +16,9 @@ Endpoints
     GET  /api/tools                 -> registered tool definitions
     GET  /api/search?q=..&kind=..   -> web/news/wikipedia search (no key)
     GET  /api/fetch?url=..          -> fetch a page as plain text
-    POST /api/sessions              -> create a session
+    POST /api/sessions              -> create a session (body: optional {"max_turns": int})
     GET  /api/sessions              -> list saved sessions
+    DELETE /api/sessions            -> delete ALL sessions (returns {"deleted": int})
     GET  /api/sessions/<id>         -> full AgentState
     DELETE /api/sessions/<id>       -> delete a session
     POST /api/sessions/<id>/clear     -> reset history, keep the same session
@@ -44,9 +45,19 @@ from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from core import AgentState, ToolCall, new_state, user_message
+from core import (
+    AgentState,
+    ChatMessage,
+    ToolCall,
+    agent_bio,
+    finalize_turn,
+    new_state,
+    should_stop_after_retries,
+    user_message,
+)
 from core.loop import MaxTurnsError, resolve_approval, step
 from core.sessions import (
+    delete_all_sessions,
     delete_session,
     list_sessions,
     load_session,
@@ -146,8 +157,11 @@ class AgentApp:
             self._sessions[session_id] = state
         return state
 
-    def create_session(self) -> AgentState:
-        state = new_agent_state()
+    def create_session(self, max_turns: int | None = None) -> AgentState:
+        state = new_agent_state(max_turns=max_turns)
+        state.messages.append(
+            ChatMessage(role="system", content=agent_bio(state, self.registry))
+        )
         self._sessions[state.session_id] = state
         return state
 
@@ -155,10 +169,27 @@ class AgentApp:
         in_memory = self._sessions.pop(session_id, None)
         return delete_session(session_id) or in_memory is not None
 
-    def clear_session(self, session_id: str) -> AgentState:
-        """Reset a session to a fresh state, keeping the same session id."""
-        state = new_agent_state()
+    def delete_all_sessions(self) -> int:
+        """Delete every saved session (disk + in-memory). Returns the count."""
+        removed = delete_all_sessions()
+        with self._lock_guard:
+            removed += len(self._sessions)
+            self._sessions.clear()
+            self._locks.clear()
+        return removed
+
+    def clear_session(self, session_id: str, max_turns: int | None = None) -> AgentState:
+        """Reset a session to a fresh state, keeping the same session id.
+
+        The session's turn-budget setting is preserved unless an explicit
+        ``max_turns`` is supplied.
+        """
+        keep = self.get_session(session_id).max_turns
+        state = new_agent_state(max_turns=max_turns if max_turns is not None else keep)
         state.session_id = session_id
+        state.messages.append(
+            ChatMessage(role="system", content=agent_bio(state, self.registry))
+        )
         self._sessions[session_id] = state
         save_session(state)
         return state
@@ -217,6 +248,12 @@ class AgentApp:
                 return
             last = state.messages[-1] if state.messages else None
             if last is not None and last.role == "assistant" and not last.function_calls:
+                finalize_turn(state)
+                out.event("done", {"state": state.model_dump()})
+                save_session(state)
+                return
+            if should_stop_after_retries(state):
+                finalize_turn(state)
                 out.event("done", {"state": state.model_dump()})
                 save_session(state)
                 return
@@ -292,6 +329,19 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    @staticmethod
+    def _coerce_max_turns(body: dict[str, Any]) -> int | None:
+        raw = body.get("max_turns")
+        if raw is None:
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if value < 1:
+            return None
+        return value
 
     def _search_dispatch(self, app: AgentApp, args: dict[str, Any]) -> None:
         try:
@@ -416,7 +466,11 @@ class Handler(BaseHTTPRequestHandler):
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
         if path == "/api/sessions":
-            state = app.create_session()
+            body = self._read_json()
+            max_turns = self._coerce_max_turns(body)
+            if "max_turns" in body and max_turns is None:
+                return self._send_json(400, {"error": "invalid max_turns"})
+            state = app.create_session(max_turns=max_turns)
             return self._send_json(200, {"session_id": state.session_id})
         if path.startswith("/api/sessions/"):
             parts = path.split("/")
@@ -429,7 +483,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(400, {"error": "invalid session id"})
                 except FileNotFoundError:
                     return self._send_json(404, {"error": "session not found"})
-                state = app.clear_session(session_id)
+                body = self._read_json()
+                max_turns = self._coerce_max_turns(body)
+                if "max_turns" in body and max_turns is None:
+                    return self._send_json(400, {"error": "invalid max_turns"})
+                state = app.clear_session(session_id, max_turns=max_turns)
                 return self._send_json(200, {"state": state.model_dump()})
             try:
                 state = app.get_session(session_id)
@@ -455,6 +513,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(403, {"error": "forbidden"})
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
+        if path == "/api/sessions":
+            removed = app.delete_all_sessions()
+            return self._send_json(200, {"deleted": removed})
         if path.startswith("/api/sessions/"):
             session_id = path.split("/")[-1]
             try:

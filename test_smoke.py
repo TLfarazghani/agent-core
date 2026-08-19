@@ -8,6 +8,8 @@ and the rejection path clears state without executing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+import tempfile
 
 from core import (
     AgentState,
@@ -382,6 +384,153 @@ def test_definitions_load() -> None:
     registry, _ = make_registry()
     names = {d.name for d in registry.definitions()}
     assert names == {"echo", "run_code"}
+
+
+def _flaky_registry() -> tuple[ToolRegistry, list]:
+    """echo fails on text == 'boom', succeeds otherwise. Records calls."""
+    calls = []
+
+    def flaky(arguments: dict) -> str:
+        calls.append(arguments)
+        if arguments.get("text") == "boom":
+            return "error: boom failed"
+        return f"echo: {arguments['text']}"
+
+    registry = ToolRegistry()
+    registry.load_json("tools/registry.json", {"echo": flaky}, names={"echo"})
+    return registry, calls
+
+
+def test_retry_once_recovers_with_corrected_args() -> None:
+    """A failed tool call is retried exactly once with corrected args, then
+    the turn succeeds. A bounded lesson lands in memory at the terminal."""
+    registry, calls = _flaky_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    state.messages.append(user_message("retry me"))
+    provider = FakeProvider(
+        [
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c1", name="echo", arguments={"text": "boom"})],
+            ),
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c2", name="echo", arguments={"text": "fixed"})],
+            ),
+            ChatMessage(role="assistant", content="done."),
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        run(state, provider, registry, memory_dir=Path(tmp))
+        assert [c["text"] for c in calls] == ["boom", "fixed"]
+        assert state.retry_count == 1  # only the first failure counted
+        assert state.messages[-1].content == "done."
+        from core.memory import list_memories
+
+        lessons = [e for e in list_memories(Path(tmp)) if e["kind"] == "lesson"]
+        assert len(lessons) == 1
+        assert "retry exactly once" in lessons[0]["content"]
+
+
+def test_retry_once_gives_up_after_second_failure() -> None:
+    """Two consecutive failures stop the loop cleanly -- no third attempt."""
+    registry, calls = _flaky_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    state.messages.append(user_message("try hard"))
+    provider = FakeProvider(
+        [
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c1", name="echo", arguments={"text": "boom"})],
+            ),
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c2", name="echo", arguments={"text": "boom"})],
+            ),
+            ChatMessage(role="assistant", content="unused third response."),
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        run(state, provider, registry, memory_dir=Path(tmp))
+        assert state.retry_count == 2
+        assert state.messages[-1].role == "tool"
+        assert state.messages[-1].content.startswith("error")
+        assert len(calls) == 2  # third provider response was never generated
+
+
+def test_rejected_call_never_retried_records_lesson() -> None:
+    """resolve_approval(approved=False) stays the only way through a rejected
+    call; the rejection is reflected as a lesson, never retried."""
+    registry, counter = make_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    state.messages.append(user_message("do it"))
+    provider = FakeProvider(
+        [
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[
+                    ToolCall(
+                        id="c1",
+                        name="run_code",
+                        arguments={"language": "python", "code": "print(1)", "timeout_seconds": 5},
+                    )
+                ],
+            ),
+            ChatMessage(role="assistant", content="ok, not running it."),
+        ]
+    )
+    step(state, provider, registry)
+    assert state.pending_approval is not None
+    resolve_approval(state, registry, approved=False)
+    assert counter.calls == 0
+    with tempfile.TemporaryDirectory() as tmp:
+        run(state, provider, registry, memory_dir=Path(tmp))
+        from core.memory import list_memories
+
+        lessons = [e for e in list_memories(Path(tmp)) if e["kind"] == "lesson"]
+        assert len(lessons) == 1
+        assert "rejected" in lessons[0]["content"]
+    assert counter.calls == 0  # run_code never executed
+
+
+def test_retry_budget_resets_on_new_user_turn() -> None:
+    registry, _ = _flaky_registry()
+    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+    state.messages.append(user_message("first turn"))
+    provider = FakeProvider(
+        [
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c1", name="echo", arguments={"text": "boom"})],
+            ),
+            ChatMessage(role="assistant", content="recovered turn one."),
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        run(state, provider, registry, memory_dir=Path(tmp))
+    assert state.retry_count == 1
+
+    state.messages.append(user_message("second turn"))
+    provider2 = FakeProvider(
+        [
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c2", name="echo", arguments={"text": "boom"})],
+            ),
+            ChatMessage(role="assistant", content="recovered turn two."),
+        ]
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        run(state, provider2, registry, memory_dir=Path(tmp))
+    # budget reset at the new user message, so turn two got its own retry
+    assert state.retry_count == 1
 
 
 def main() -> None:

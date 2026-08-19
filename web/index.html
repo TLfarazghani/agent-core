@@ -13,6 +13,11 @@
       <div id="session-actions">
         <button id="clear-session" class="btn btn-small">Clear history</button>
         <button id="delete-session" class="btn btn-small btn-danger">Delete</button>
+        <button id="delete-all-sessions" class="btn btn-small btn-danger">Delete all</button>
+      </div>
+      <div id="turn-setting">
+        <label for="max-turns-input" class="mono">turn budget</label>
+        <input id="max-turns-input" type="number" min="1" value="8" title="Loop turns per session (applies to the next new/cleared session)" />
       </div>
       <ul id="session-list"></ul>
       <div id="transport-toggle">

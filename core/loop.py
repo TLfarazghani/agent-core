@@ -13,6 +13,32 @@ from .tool_registry import ToolRegistry
 
 GenerateProvider = Callable[[AgentState], ChatMessage]
 
+# Retry-once: after a tool failure in one user turn, the loop allows one more
+# generate+execute cycle before giving up cleanly. Never auto-retries a
+# rejected call (the resolve_approval(approved=False) path stays the only way
+# through for those).
+RETRY_ONCE_LIMIT = 1
+
+
+def should_stop_after_retries(state: AgentState) -> bool:
+    return state.retry_count > RETRY_ONCE_LIMIT
+
+
+def _note_tool_result(state: AgentState, tool_msg: ChatMessage | None) -> None:
+    """Count a tool failure toward the retry-once budget."""
+    if tool_msg is not None and tool_msg.role == "tool" and tool_msg.content.startswith("error"):
+        state.retry_count += 1
+
+
+def finalize_turn(state: AgentState, memory_dir=None) -> None:
+    """Reflection hook at a terminal state. Bounded; never raises."""
+    try:
+        from .reflection import maybe_emit_lesson
+
+        maybe_emit_lesson(state, memory_dir=memory_dir)
+    except Exception:  # noqa: BLE001 - reflection must never block the loop
+        pass
+
 
 class PendingApprovalError(RuntimeError):
     pass
@@ -42,12 +68,17 @@ def step(
             f"turn cap reached ({state.max_turns}); start a new session"
         )
 
+    last_before = state.messages[-1] if state.messages else None
+    if last_before is not None and last_before.role == "user":
+        state.retry_count = 0
+
     response = provider(state)
     state.messages.append(response)
     state.turn_count += 1
 
     for i, call in enumerate(response.function_calls or []):
         tool_msg = registry.dispatch(state, call)
+        _note_tool_result(state, tool_msg)
         if tool_msg is None:
             # Approval parked for this call. Keep the calls after it in this
             # turn so resolve_approval() can resume them (fixes silent loss
@@ -62,19 +93,25 @@ def run(
     state: AgentState,
     provider: GenerateProvider,
     registry: ToolRegistry,
+    memory_dir=None,
 ) -> AgentState:
     """Drive ``step()`` until the agent reaches a terminal state.
 
-    Terminal states: a pending approval, the turn cap, or an assistant
-    message that makes no tool calls.
+    Terminal states: a pending approval, the turn cap, a retry-once give-up,
+    or an assistant message that makes no tool calls. On a terminal state a
+    bounded reflection lesson may be written to memory.
     """
     while True:
         if state.pending_approval is not None:
             return state
         if state.turn_count >= state.max_turns:
             return state
+        if should_stop_after_retries(state):
+            finalize_turn(state, memory_dir)
+            return state
         last = state.messages[-1] if state.messages else None
         if last is not None and last.role == "assistant" and not last.function_calls:
+            finalize_turn(state, memory_dir)
             return state
         step(state, provider, registry)
 
@@ -97,7 +134,9 @@ def resolve_approval(
     state.pending_approval = None
     if approved:
         call = ToolCall(id=pending.call_id, name=pending.tool_name, arguments=pending.arguments)
-        state.messages.append(registry.execute(call))
+        tool_msg = registry.execute(call, state)
+        _note_tool_result(state, tool_msg)
+        state.messages.append(tool_msg)
     else:
         state.messages.append(
             ChatMessage(
@@ -110,6 +149,7 @@ def resolve_approval(
     state.pending_calls = []
     for i, call in enumerate(remaining):
         tool_msg = registry.dispatch(state, call)
+        _note_tool_result(state, tool_msg)
         if tool_msg is None:
             state.pending_calls = list(remaining[i + 1 :])
             break

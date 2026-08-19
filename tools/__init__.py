@@ -7,6 +7,8 @@
 - ``register_docgen_tools`` — Phase 2: create_docx / create_pptx local compute
   (Windows backend: python-docx / python-pptx).
 - ``register_runcode_tool`` — Phase 3: run_code Docker sandbox (approval-gated).
+- ``register_cognitive_tools`` — Phase 5: inspect_self / remember / recall /
+  make_plan / update_plan — identity, memory, planning (state-aware handlers).
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from typing import Any, Callable
 
 from core.tool_registry import ToolRegistry
 
+from .cognitive import COGNITIVE_TOOLS, register_cognitive_tools
 from .remote import McpClient, tool_handler
 from .web_search import make_handler as make_websearch_handler
 from .web_search import make_fetch_handler as make_fetch_handler

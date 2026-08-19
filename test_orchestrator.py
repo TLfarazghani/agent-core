@@ -154,6 +154,112 @@ def test_provider_renders_messages_in_order() -> None:
     assert request["extra_body"]["top_k"] == 50
 
 
+def test_provider_trims_history_to_context_budget() -> None:
+    """Long session: old turns are dropped before the request is built, but the
+    last (in-flight) user turn is always sent."""
+    from windows.orchestrator import LlamaCppProvider
+
+    class FakeCompletions:
+        def __init__(self, client) -> None:
+            self.client = client
+
+        def create(self, **kwargs):
+            self.client.calls.append(kwargs)
+            return FakeResponse()
+
+    class FakeChoice:
+        def __init__(self, message) -> None:
+            self.message = message
+
+    class FakeResponse:
+        usage = None
+        choices = [FakeChoice(FakeMessage("stub"))]
+
+    class FakeChat:
+        def __init__(self, client) -> None:
+            self.completions = FakeCompletions(client)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+            self.chat = FakeChat(self)
+
+    registry: TR = default_registry()
+    # Tiny budget: system prompt + last user turn only.
+    provider = LlamaCppProvider(registry=registry, max_context_tokens=128)
+    provider.client = FakeClient()
+    state = AgentState(
+        target="windows",
+        model="LFM2.5-1.2B-Instruct",
+        messages=[
+            ChatMessage(role="system", content="sys"),
+            user_message("old turn " + "x" * 500),
+            ChatMessage(role="assistant", content="old reply"),
+            user_message("live question"),
+        ],
+    )
+    provider(state)
+    request = provider.client.calls[0]
+    roles = [m["role"] for m in request["messages"]]
+    assert roles == ["system", "user"]
+    assert request["messages"][-1]["content"] == "live question"
+    assert "old turn" not in json.dumps(request["messages"])
+
+
+def test_provider_keeps_tool_pair_when_within_budget() -> None:
+    """An assistant tool_calls + tool result within the kept window survives
+    trimming intact (never split)."""
+    from windows.orchestrator import LlamaCppProvider
+
+    class FakeCompletions:
+        def __init__(self, client) -> None:
+            self.client = client
+
+        def create(self, **kwargs):
+            self.client.calls.append(kwargs)
+            return FakeResponse()
+
+    class FakeChoice:
+        def __init__(self, message) -> None:
+            self.message = message
+
+    class FakeResponse:
+        usage = None
+        choices = [FakeChoice(FakeMessage("stub"))]
+
+    class FakeChat:
+        def __init__(self, client) -> None:
+            self.completions = FakeCompletions(client)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+            self.chat = FakeChat(self)
+
+    registry: TR = default_registry()
+    provider = LlamaCppProvider(registry=registry, max_context_tokens=10_000)
+    provider.client = FakeClient()
+    state = AgentState(
+        target="windows",
+        model="LFM2.5-1.2B-Instruct",
+        messages=[
+            ChatMessage(role="system", content="sys"),
+            user_message("run something"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                function_calls=[ToolCall(id="c9", name="echo", arguments={"text": "hi"})],
+            ),
+            ChatMessage(role="tool", tool_call_id="c9", content="echo: hi"),
+        ],
+    )
+    provider(state)
+    request = provider.client.calls[0]
+    assert request["messages"][-1]["role"] == "tool"
+    assert request["messages"][-1]["tool_call_id"] == "c9"
+    assert request["messages"][-2]["tool_calls"][0]["id"] == "c9"
+
+
 if __name__ == "__main__":
     import sys
 

@@ -8,17 +8,42 @@ share this so a session started in one can be resumed in the other.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .loop import new_state
+from .memory import MEMORY_DIR, recall_bounded
+from .meta import AGENT_NAME
 from .state import AgentState, ChatMessage
 
 SESSION_DIR = Path.home() / ".agent-core" / "sessions"
 
+DEFAULT_MAX_TURNS = 8
+
+
+def default_max_turns() -> int:
+    """Per-session turn budget for new sessions.
+
+    Overridable with the ``AGENT_CORE_MAX_TURNS`` env var; a session can also
+    override it at creation time (``new_agent_state(max_turns=...)``).
+    """
+    raw = os.environ.get("AGENT_CORE_MAX_TURNS")
+    if raw is None:
+        return DEFAULT_MAX_TURNS
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return DEFAULT_MAX_TURNS
+
 SYSTEM_PROMPT = (
-    "You are a helpful local assistant with access to tools. "
-    "Call a tool when the user asks to: create a document (create_docx), "
-    "create a presentation (create_pptx), run or execute code (run_code). "
+    f"You are {AGENT_NAME}, a local, privacy-first personal assistant running "
+    "entirely on the user's machine. Your capabilities: web search "
+    "(web_search), fetching pages (fetch_url), creating documents and "
+    "presentations (create_docx, create_pptx), running code in a sandbox "
+    "(run_code), and long-term memory across sessions (remember, recall). You "
+    "can introspect yourself (inspect_self) and track multi-step tasks "
+    "(make_plan, update_plan). Your limits: you run locally with no external "
+    "APIs beyond web search, and run_code always asks the user for approval. "
     "When the user asks you to run code or create a file, you MUST call the "
     "matching tool. Do not ask for clarification or details first: if some "
     "arguments are missing, choose sensible defaults and proceed. "
@@ -26,9 +51,22 @@ SYSTEM_PROMPT = (
 )
 
 
-def new_agent_state() -> AgentState:
-    state = new_state(target="windows", model="LFM2.5-1.2B-Instruct")
+def new_agent_state(
+    memory_dir: Path = MEMORY_DIR,
+    recall_tokens: int = 512,
+    max_turns: int | None = None,
+) -> AgentState:
+    state = new_state(
+        target="windows",
+        model="LFM2.5-1.2B-Instruct",
+        max_turns=max_turns if max_turns is not None else default_max_turns(),
+    )
     state.messages.append(ChatMessage(role="system", content=SYSTEM_PROMPT))
+    recall = recall_bounded("", memory_dir=memory_dir, max_tokens=recall_tokens)
+    if recall:
+        state.messages.append(
+            ChatMessage(role="system", content=f"Prior knowledge:\n{recall}")
+        )
     return state
 
 
@@ -100,3 +138,17 @@ def delete_session(session_id: str, session_dir: Path = SESSION_DIR) -> bool:
         path.unlink()
         return True
     return False
+
+
+def delete_all_sessions(session_dir: Path = SESSION_DIR) -> int:
+    """Delete every saved session. Returns the number of files removed."""
+    if not session_dir.exists():
+        return 0
+    removed = 0
+    for path in session_dir.glob("*.json"):
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed

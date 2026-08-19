@@ -38,6 +38,9 @@
 
 import "./parser.js";
 import { createEngine } from "./engine.js";
+import { estimateTokens } from "./context.js";
+import { recallBounded, saveMemory as memorySave } from "./memory.js";
+import { makePlan as planMake, updatePlan as planUpdate } from "./planner.js";
 
 const { parse_tool_calls } = self.AgentParser;
 
@@ -45,11 +48,19 @@ const TRANSFORMERS_CDN =
   "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0";
 const PYODIDE_CDN = "https://cdn.jsdelivr.net/pyodide/v314.0.5/full/pyodide.mjs";
 
+const AGENT_NAME = "Agent Core";
 const MODEL_ID = "LiquidAI/LFM2.5-1.2B-Instruct-ONNX";
+const ONNX_CONTEXT_TOKENS = 32768;
 
 const SYSTEM_PROMPT =
-  "You are a helpful local assistant running entirely in your browser. " +
-  "You have access to a small set of tools. When the user asks you to run or " +
+  `You are ${AGENT_NAME}, a local, privacy-first personal assistant running ` +
+  "entirely in your browser. Your capabilities: web search (web_search), " +
+  "fetching pages (fetch_url), running code in a sandbox (run_code), and " +
+  "long-term memory across sessions (remember, recall). You can introspect " +
+  "yourself (inspect_self) and track multi-step tasks (make_plan, " +
+  "update_plan). Your limits: you run locally with no external APIs beyond " +
+  "web search, and run_code always asks the user for approval. " +
+  "When the user asks you to run or " +
   "execute code, you MUST call the run_code tool (python only). When the user " +
   "asks for news, recent information, facts, or research, call the web_search " +
   "tool (kind='news' for headlines, kind='wikipedia' for encyclopedia entries). " +
@@ -88,6 +99,84 @@ const BROWSER_TOOLS = {
       const data = await resp.json();
       if (data.error) return `error: ${data.error}`;
       return data.result;
+    },
+  },
+  inspect_self: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) => {
+      const snapshot = {
+        name: AGENT_NAME,
+        session_id: state.session_id,
+        target: state.target,
+        model: state.model,
+        turn_count: state.turn_count,
+        max_turns: state.max_turns,
+        estimated_context_tokens: estimateTokens(state.messages),
+        max_context_tokens: ONNX_CONTEXT_TOKENS,
+        pending_approval: state.pending_approval,
+        plan: state.plan,
+        tools: Object.keys(BROWSER_TOOLS).sort(),
+      };
+      return JSON.stringify(snapshot, null, 2);
+    },
+  },
+  remember: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) => {
+      const kind = args.kind || "fact";
+      if (!["fact", "preference", "lesson", "session_summary"].includes(kind)) {
+        return `error: invalid kind '${kind}'`;
+      }
+      try {
+        const entry = memorySave({
+          key: args.key,
+          content: args.content,
+          kind,
+          source_session: state.session_id,
+        });
+        return `remembered: [${entry.kind}] ${entry.key}: ${entry.content}`;
+      } catch (err) {
+        return `error: ${err && err.message ? err.message : String(err)}`;
+      }
+    },
+  },
+  recall: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) => {
+      const topic = args.topic || "";
+      const limit = args.limit || 5;
+      const text = recallBounded(topic, 512);
+      const lines = text.split("\n").filter((l) => l);
+      if (!lines.length) return `no memories found for topic '${topic}'`;
+      return lines.slice(0, limit).join("\n");
+    },
+  },
+  make_plan: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) => {
+      let steps = args.steps;
+      if (typeof steps === "string") steps = [steps];
+      if (!Array.isArray(steps) || !steps.length || !steps.every((s) => typeof s === "string" && s.trim())) {
+        return "error: make_plan requires a non-empty list of step descriptions";
+      }
+      const plan = planMake(state, args.goal, steps);
+      return `plan set: ${JSON.stringify(plan, null, 2)}`;
+    },
+  },
+  update_plan: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) => {
+      try {
+        const step = planUpdate(state, args.step_id, args.status, args.result);
+        return `step ${step.id} -> ${step.status}`;
+      } catch (err) {
+        return `error: ${err && err.message ? err.message : String(err)}`;
+      }
     },
   },
 };
@@ -157,6 +246,80 @@ const TOOL_SCHEMAS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "inspect_self",
+      description:
+        "Return a live snapshot of the agent: name, session id, target, model, turn budget, estimated context usage, pending approval, current plan, and available tools.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remember",
+      description:
+        "Save a fact, preference, or lesson to long-term memory so it persists across sessions. kind is one of: fact, preference, lesson, session_summary.",
+      parameters: {
+        type: "object",
+        properties: {
+          key: { type: "string", minLength: 1 },
+          content: { type: "string", minLength: 1 },
+          kind: { type: "string", enum: ["fact", "preference", "lesson", "session_summary"] },
+        },
+        required: ["key", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "recall",
+      description: "Search long-term memory for entries matching a topic. Empty topic recalls the most recent memories.",
+      parameters: {
+        type: "object",
+        properties: {
+          topic: { type: "string" },
+          limit: { type: "integer", minimum: 1, maximum: 20 },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "make_plan",
+      description:
+        "Set an explicit multi-step plan for the current task (goal + ordered step descriptions). Each step that calls a tool still requires normal approval.",
+      parameters: {
+        type: "object",
+        properties: {
+          goal: { type: "string", minLength: 1 },
+          steps: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1 },
+        },
+        required: ["goal", "steps"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description:
+        "Mark a plan step as in_progress, done, failed, or skipped (optionally with a short result).",
+      parameters: {
+        type: "object",
+        properties: {
+          step_id: { type: "string", minLength: 1 },
+          status: { type: "string", enum: ["pending", "in_progress", "done", "failed", "skipped"] },
+          result: { type: "string" },
+        },
+        required: ["step_id", "status"],
+      },
+    },
+  },
 ];
 
 let modelInstance = null;
@@ -168,14 +331,35 @@ function post(type, data) {
   self.postMessage(Object.assign({ type }, data || {}));
 }
 
-function resetSession() {
+function agentBio(state) {
+  const tools = Object.keys(BROWSER_TOOLS).sort().join(", ");
+  return (
+    `You are ${AGENT_NAME}.\n` +
+    `Target: ${state.target}. Model: ${state.model}.\n` +
+    `Context budget: ${estimateTokens(state.messages)} ~tokens / ${ONNX_CONTEXT_TOKENS}.\n` +
+    `Turn budget: ${state.turn_count}/${state.max_turns} used.\n` +
+    `Available tools: ${tools}.\n` +
+    "You answer questions about yourself from this block; never invent " +
+    "capabilities you do not have."
+  );
+}
+
+function resetSession(maxTurns) {
   engine = createEngine({
     provider: { generate },
     tools: BROWSER_TOOLS,
     parser: { parse_tool_calls },
     model: MODEL_ID,
+    max_turns: Number.isInteger(maxTurns) && maxTurns >= 1 ? maxTurns : 8,
+    max_context_tokens: ONNX_CONTEXT_TOKENS,
+    memory: { saveMemory: memorySave },
   });
   engine.state.messages.push({ role: "system", content: SYSTEM_PROMPT });
+  const recall = recallBounded("", 512);
+  if (recall) {
+    engine.state.messages.push({ role: "system", content: `Prior knowledge:\n${recall}` });
+  }
+  engine.state.messages.push({ role: "system", content: agentBio(engine.state) });
   return engine;
 }
 
@@ -357,7 +541,7 @@ self.onmessage = async (event) => {
         break;
       }
       case "reset":
-        resetSession();
+        resetSession(msg.max_turns);
         post("done", { state: JSON.parse(JSON.stringify(engine.state)) });
         break;
       default:

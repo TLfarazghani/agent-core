@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Role = Literal["user", "assistant", "tool", "system"]
 Target = Literal["windows", "android", "webgpu"]
+StepStatus = Literal["pending", "in_progress", "done", "failed", "skipped"]
 
 
 class ToolCall(BaseModel):
@@ -43,6 +44,22 @@ class ToolDefinition(BaseModel):
     parameters: dict[str, Any]
 
 
+class PlanStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    description: str
+    status: StepStatus = "pending"
+    result: Optional[str] = None
+
+
+class Plan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str
+    steps: list[PlanStep] = Field(default_factory=list)
+
+
 class AgentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -54,3 +71,5 @@ class AgentState(BaseModel):
     turn_count: int = 0
     pending_approval: Optional[PendingApproval] = None
     pending_calls: list[ToolCall] = Field(default_factory=list)
+    retry_count: int = 0
+    plan: Optional[Plan] = None
