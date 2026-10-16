@@ -9,8 +9,17 @@ set "WEB_HEALTH=http://127.0.0.1:8002/api/health"
 set "WEB_URL=http://127.0.0.1:8002"
 if "%AGENT_CORE_MODEL%"=="" set "AGENT_CORE_MODEL=LFM2.5-1.2B-Instruct"
 
+REM Phase 7: default the client context budget to match the selected model's
+REM server ctx when the user has not overridden AGENT_CORE_MAX_CONTEXT_TOKENS
+REM (2.6B=131072, 8B-A1B=128000; anything else keeps the 32768 default).
+if defined AGENT_CORE_MAX_CONTEXT_TOKENS goto :ctx_set
+if "%AGENT_CORE_MODEL%"=="LFM2.5-2.6B" set "AGENT_CORE_MAX_CONTEXT_TOKENS=131072"
+if "%AGENT_CORE_MODEL%"=="LFM2.5-8B-A1B" set "AGENT_CORE_MAX_CONTEXT_TOKENS=128000"
+if not defined AGENT_CORE_MAX_CONTEXT_TOKENS set "AGENT_CORE_MAX_CONTEXT_TOKENS=32768"
+:ctx_set
+
 echo =============================================
-echo   agent-core launcher  -  %AGENT_CORE_MODEL% (local)
+echo   agent-core launcher  -  %AGENT_CORE_MODEL%  (ctx %AGENT_CORE_MAX_CONTEXT_TOKENS%)
 echo =============================================
 echo.
 
@@ -27,6 +36,11 @@ echo [1/3] model server ...
 call :is_up "%LLAMA_HEALTH%"
 if "%UP%"=="1" (
   echo        llama-server already running on :8001
+  call :server_model
+  if not "%SRV_MODEL%"=="%AGENT_CORE_MODEL%" (
+    echo        [WARN] :8001 is serving %SRV_MODEL%, not %AGENT_CORE_MODEL%.
+    echo               Stop llama-server, then run:  set "AGENT_CORE_MODEL=%AGENT_CORE_MODEL%" ^& powershell -File windows\server_config.ps1
+  )
 ) else (
   echo        starting llama-server ...
   start "llama-server" powershell -NoProfile -ExecutionPolicy Bypass -File "%SERVER_PS%"
@@ -87,4 +101,9 @@ REM ---------- helpers ----------
 set "UP=0"
 powershell -NoProfile -Command "try { $r=Invoke-WebRequest -UseBasicParsing -Uri '%1' -TimeoutSec 2; exit 0 } catch { exit 1 }" >nul 2>&1
 if "%errorlevel%"=="0" set "UP=1"
+exit /b 0
+
+:server_model
+set "SRV_MODEL=unknown"
+for /f "usebackq delims=" %%m in (`powershell -NoProfile -Command "try { $d=(Invoke-RestMethod -Uri 'http://127.0.0.1:8001/v1/models' -TimeoutSec 3).data[0]; if ($d.id) { $d.id } else { 'unknown' } } catch { 'unknown' }"`) do set "SRV_MODEL=%%m"
 exit /b 0
