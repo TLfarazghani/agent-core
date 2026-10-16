@@ -2,6 +2,8 @@
 
 Full phased build plan for agent-core. Source: `local-agent-lfm25-research.md` (2026-08-13, updated 2026-08-17), verified against Liquid Docs and the host machine.
 
+**Status (2026-10-16):** completed & gates passed — phases 0, 1, 1b, 2, 3, 5, 6, 7. Phase 4 Windows path shipped but its Android port and in-browser WebGPU model are unverified; Phase 6b compaction is not built. **Phases 8–12 below are planned, not built** (no code). Verified test run: 156 pass (135 pytest + 17 JS engine + 4 parser parity).
+
 ## Locked decisions (2026-08-17)
 
 | Decision | Choice |
@@ -228,6 +230,89 @@ Not defined by the research doc — the three targets are Windows, Android, WebG
 ### Gate
 
 Second-model gates (A, B) recorded in `docs/benchmarks.md`; Windows default decision made on measured data, not vibes.
+
+## Phases 8–12 — Claude Code architecture review (planned)
+
+**Source:** an architectural review of the leaked Claude Code source (`codeaashu/claude-code`, leaked 2026-03-31). That repository archives **unlicensed, proprietary** Anthropic code, so Phases 8–12 borrow **patterns only, never source**. They are the subset of its architecture that fits a local, privacy-first LFM2.5 assistant; the rest is explicitly rejected (see the mapping table below). Everything stays stdlib-only and transport-agnostic with JS/Android parity, and the hardcoded approval gate (`core/tool_registry.py:18`, `:102`) is never weakened.
+
+## Phase 8 — Command & control surface (slash-command registry + permission modes)
+
+Agent Core's CLI exposes only `/new /turns /resume /tools /approve /reject /help /quit` (`cli.py:229`) and the web sidebar has no command surface at all. Claude Code's UX is driven by ~85 slash commands plus explicit permission modes. Port the *shape*, not the coding-specific commands.
+
+- [ ] Command registry in `core/` (stdlib-only): one table of `{name, description, handler}` shared by `cli.py` and `web/server.py`, so a command behaves identically in both UIs (same transport-agnostic rule as the loop/registry).
+- [ ] Commands that map to real Agent Core state: `/compact` (Phase 11), `/context` (budget view from `core/context.py`), `/memory` (list/forget via `core/memory.py`), `/plan` (render `AgentState.plan`), `/model` (`core.sessions.default_model` + `AGENT_CORE_MODEL`), `/doctor` + `/cost` (Phase 12), `/status` (alias of `inspect_self`). Reject the coding-only ones (`/commit`, `/pr_comments`, `/vim`, `/desktop`, `/mobile`).
+- [ ] **Permission modes** — `default` | `plan` | `auto` | `strict` — stored on `AgentState` (add to `core/state.py` + `schemas/agent_state.schema.json`, sync `docs/data-contracts.md`). Enforced **inside `core/tool_registry.dispatch()`**, never model-decided. `strict` = current behavior; `auto` auto-approves only non-`run_code` tools; `plan` runs read-only/planning tools and parks anything that mutates state; `default` = ask. `run_code` is never bypassable in any mode.
+- [ ] JS parity: `web/commands.js` + a permission-mode check in `web/engine.js` mirroring `dispatch()`; parity test in `test_webgpu_engine.mjs`.
+- [ ] Tests: command-registry round-trip (CLI and web handler identical), each permission mode's dispatch outcome, and that **no mode lets `run_code` skip `resolve_approval`**.
+
+**Gate:** the same command produces the same result in CLI and web; every permission mode still routes `run_code` through the approval gate.
+
+## Phase 9 — File & code-intelligence tools
+
+Claude Code's largest tool category is file I/O + search (`FileReadTool`, `FileWriteTool`, `FileEditTool`, `GlobTool`, `GrepTool`). Agent Core has none — `run_code` is the only filesystem-capable path, forcing the approval gate for trivial reads.
+
+- [ ] `tools/files.py` — handlers `read_file(path, max_chars?)`, `write_file(path, content)`, `edit_file(path, old_string, new_string)` (string-replacement, Claude Code's `FileEditTool` semantics), `list_dir(path)`, `glob(pattern, root?)`, `grep(pattern, path?, max_results?)`.
+- [ ] **Approval policy:** reads/list/glob/grep are `requires_approval: false`; `write_file` / `edit_file` are `requires_approval: true` — enforced by definition *and* the same hardcoded gate as `run_code`.
+- [ ] **Security:** reuse the `tools/_paths.py` / `core/sessions.py` precedent — resolve paths and enforce an allowed-root policy (default: working dir + `output/`), reject traversal. `edit_file` fails atomically when `old_string` is absent or non-unique.
+- [ ] Web/Android parity: browser tools behind a user-granted directory handle (File System Access API) or routed through `/api`; document the platform ceiling where a browser cannot touch arbitrary paths.
+- [ ] Tests: `test_files.py` (temp dir) — read/edit round-trip, unique-match enforcement, traversal rejection, approval halts `write_file`/`edit_file`.
+
+**Gate:** the agent can read, search, and edit files; every mutating call halts at the approval gate; path traversal is rejected.
+
+## Phase 10 — Sub-agents & skills
+
+Claude Code spawns bounded sub-agents (`AgentTool` + `coordinator/`) and runs reusable workflows (`skills/` + `SkillTool`). Both map onto Agent Core's existing loop.
+
+- [ ] `core/subagent.py` — `spawn_subagent(state, goal, max_turns)` runs a **nested, bounded** `core.loop.run()` with an isolated message list and its own turn/context budget, returning one summary string. The approval gate and retry-once rules apply unchanged inside it; approvals bubble to the parent loop and are never auto-approved. Scope: one level deep, hard cap on concurrent sub-agents.
+- [ ] `agent` tool (`requires_approval: false`, state-aware) registered in `default_registry`; `inspect_self` reports active sub-agents.
+- [ ] `tools/skills.py` + `skills/` — a skill is a declarative `{name, description, prompt, tools?}` JSON; `run_skill(name, args)` injects the skill prompt and constrains the tool set (a **tool allowlist**, not a permission bypass — every gated call still hits `dispatch()`).
+- [ ] JS parity: `web/subagent.js` + skill loader; `test_webgpu_engine.mjs` coverage.
+- [ ] Tests: `test_subagent.py` (bounded turns, approval propagation, no infinite recursion), `test_skills.py` (allowlist enforced, unknown skill errors).
+
+**Gate:** a sub-agent completes a bounded task and returns its summary to the parent; a skill runs with its allowlist; neither can bypass the approval gate.
+
+## Phase 11 — Context & memory automation
+
+Claude Code's `compact/` (summarization) and `extractMemories/` (automatic capture) complete Agent Core's Phase 5 (memory/reflection) and Phase 6 (budget).
+
+- [ ] **Phase 6b compaction (now scheduled):** when `core/context.trim_to_budget` would drop turns, summarize the dropped turns into one replacement system message via **one extra generate turn** — only if measurement (`docs/benchmarks.md`) shows base trimming loses too much. Never compacts the live approval turn or splits a tool/assistant pair.
+- [ ] **Automatic memory extraction:** an `extractMemories` analog — after a terminal turn, an extended `core/reflection.py` proposes durable facts/preferences into `core/memory.py` (`kind=fact|preference`), bounded and deduped by key, rather than only failure lessons.
+- [ ] **Tasks vs. plan:** add a lightweight `tasks` collection distinct from `AgentState.plan` (Claude Code separates `TaskCreateTool`/`TaskUpdateTool` from plan mode), persisted per session and surfaced in CLI + web.
+- [ ] Tests: `test_context.py` compaction cases (summary replaces dropped turns, tool pairs never split), memory-extraction dedupe, task persistence.
+
+**Gate:** a long resumed session stays under budget via compaction (or is proven unnecessary by measurement); memory extraction writes deduped facts; tasks persist across resume.
+
+## Phase 12 — Observability (cost, context, doctor)
+
+Claude Code surfaces `/cost`, `/context`, and `/doctor`. Agent Core already captures `usage` in `windows/orchestrator.py` but never shows it.
+
+- [ ] `core/telemetry.py` (stdlib-only, **local only — no network**): accumulate per-session prompt/completion tokens and turn timing from the provider usage already captured; expose `session_usage(state)`.
+- [ ] `/cost` + `/context` commands and a web sidebar readout: tokens used vs `max_context_tokens`, per-turn tok/s, tokens-only cost (inference is local).
+- [ ] `/doctor` — self-diagnostics extending `inspect_self`: llama-server reachability, Docker availability for `run_code`, model/ctx match (the `Core-agent.bat` `:server_model` probe already hits `/v1/models`), session/memory dir writability.
+- [ ] Tests: usage accumulation and formatting; doctor output with fake/unavailable dependencies (no live server).
+
+**Gate:** `/cost` and `/context` report accurate session usage; `/doctor` correctly reports each dependency's state without a live model.
+
+## Claude Code mapping (borrowed vs. rejected)
+
+| Claude Code concept | Decision | Where it lands |
+|---|---|---|
+| Slash-command registry | **Borrow** (shape) | Phase 8 — `core/` command table |
+| Permission modes | **Borrow** (hardcoded) | Phase 8 — `dispatch()` |
+| File / glob / grep tool category | **Borrow** | Phase 9 — `tools/files.py` |
+| Sub-agents (`AgentTool`, `coordinator/`) | **Borrow** (bounded) | Phase 10 — `core/subagent.py` |
+| Skills / plugins | **Borrow** (skills only) | Phase 10 — `tools/skills.py` |
+| `compact/`, `extractMemories/` | **Borrow** | Phase 11 |
+| `tasks/` | **Borrow** | Phase 11 |
+| `/cost`, `/context`, `/doctor` | **Borrow** | Phase 12 — `core/telemetry.py` |
+| Bun / React / Ink / TypeScript stack | **Reject** | stdlib-only core + vanilla JS is the contract |
+| OAuth, cloud, remote sessions | **Reject** | privacy-first / local-first |
+| Telemetry, GrowthBook feature flags | **Reject** | nothing is collected; no phone-home |
+| IDE bridge, vim, voice, keybindings | **Reject** | out of scope for the local assistant |
+
+## Phase 8–12 ordering
+
+Forced by dependency: Phase 8's permission modes gate Phase 9's mutating tools; Phases 10–11 build on Phase 8's command surface; Phase 12 only needs the usage already captured in Phase 4. Recommended order: **8 → 9 → 12 → 11 → 10** (observability before compaction; sub-agents last as highest-complexity).
 
 ## Traps
 
