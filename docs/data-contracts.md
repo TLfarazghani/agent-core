@@ -76,7 +76,10 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "pending_calls": [],
   "retry_count": 0,
   "permission_mode": "default",
-  "plan": null
+  "plan": null,
+  "tasks": [],
+  "active_subagents": 0,
+  "tool_allowlist": null
 }
 ```
 
@@ -93,6 +96,9 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 | `retry_count` | int | consecutive tool failures in the current user turn (reset on each new user message); retry-once stops the loop past `RETRY_ONCE_LIMIT` (1) |
 | `permission_mode` | enum | `default`, `plan`, `auto`, `strict` (Phase 8); enforced inside `tool_registry.dispatch()`, never model-decided. Set via `POST /api/sessions {"permission_mode": ...}`, the web mode selector, or `/mode [mode]` in the CLI and web UI. Serialized with the session so it survives resume |
 | `plan` | object \| null | `{ "goal", "steps": [{ "id", "description", "status": "pending\|in_progress\|done\|failed\|skipped", "result" }] }`; explicit multi-step task tracking (Phase 5) |
+| `tasks` | array of Task | Phase 11 durable backlog, distinct from `plan`: `[{ "id": "task_N", "description", "status": "pending\|in_progress\|done\|failed\|skipped", "result" }]`. Serialized with the session. Managed by `task_create`/`task_update`/`task_list` and `/tasks` |
+| `active_subagents` | int | Phase 10; number of sub-agents currently running. The child is seeded with `MAX_CONCURRENT_SUBAGENTS` (1) so a nested `agent` call is refused — one level deep |
+| `tool_allowlist` | array of string \| null | Phase 10; when set (by `run_skill`) `tool_registry.dispatch()` denies any tool not in the list. Cleared at the next user turn. A **restriction, not an approval bypass** — allowed calls still hit the gate |
 
 `pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention. `pending_calls` exists so multi-call turns like `[run_code, echo]` don't silently drop the calls after the approval-gated one. Plan steps are bookkeeping only — every step that calls a tool still hits the hardcoded approval gate independently; there is **no plan-based approval bypass**.
 
@@ -175,6 +181,17 @@ Memory entry record: `{ "key", "content", "kind", "created_at", "source_session"
 { "name": "grep", "parameters": { "pattern": "string", "path": "string?", "max_results": "integer?" } }
 ```
 `resolve_path()` resolves the target (symlinks included) and rejects anything that escapes the root; `edit_file` replaces exactly one occurrence and fails when `old_string` is absent or non-unique; all writes are atomic (temp file + `os.replace`). In the browser, `BROWSER_TOOLS` proxies these through `POST /api/file` (loopback/CSRF-guarded); `write_file`/`edit_file` are refused unless the body carries `approved: true`, which the worker only sends after the browser engine's own gate.
+
+**Autonomy (Phases 10–11) — sub-agents, skills, tasks. All `requires_approval: false`; `list_skills`, `task_create`/`task_update`/`task_list` are `read_only: true`. `agent` is transport-registered (it needs a provider):**
+```json
+{ "name": "agent", "parameters": { "goal": "string", "max_turns": "integer?" } }
+{ "name": "run_skill", "parameters": { "name": "string" } }
+{ "name": "list_skills", "parameters": {} }
+{ "name": "task_create", "parameters": { "description": "string" } }
+{ "name": "task_update", "parameters": { "id": "task_N", "status": "pending|in_progress|done|failed|skipped", "result": "string?" } }
+{ "name": "task_list", "parameters": {} }
+```
+A skill is a JSON file `{ "name", "description", "prompt", "tools"? }` under `skills/`; `run_skill` sets `tool_allowlist` and injects the prompt — the allowlist is a **denial in `dispatch()`, never an approval bypass**. `agent` runs a bounded nested loop (`MAX_SUBAGENT_TURNS=4`, one level deep, one at a time); a gated tool inside the sub-agent bubbles to this session's `pending_approval`. Tasks persist in `AgentState.tasks` and are managed by `task_*` / `/tasks`. The browser mirror exposes skills via `GET /api/skills` and mirrors the allowlist denial in `web/engine.js`.
 
 ## Enforcement
 

@@ -170,15 +170,27 @@ def print_header(state: AgentState) -> None:
 
 def render_plan(state: AgentState) -> None:
     plan = state.plan
-    if plan is None:
+    if plan is not None:
+        glyph = "⟦ plan ⟧" if _IS_TTY else "[plan]"
+        print(f"  {_bold(glyph)} {plan.goal}")
+        markers = {"done": "✓", "in_progress": "▶", "failed": "✗", "pending": "·", "skipped": "−"}
+        for step in plan.steps:
+            marker = markers.get(step.status, "·")
+            suffix = f" — {step.result}" if step.result else ""
+            print(f"    {marker} {step.id} {step.description} {_dim(step.status)}{suffix}")
+    render_tasks(state)
+
+
+def render_tasks(state: AgentState) -> None:
+    if not state.tasks:
         return
-    glyph = "⟦ plan ⟧" if _IS_TTY else "[plan]"
-    print(f"  {_bold(glyph)} {plan.goal}")
+    glyph = "⟦ tasks ⟧" if _IS_TTY else "[tasks]"
+    print(f"  {_bold(glyph)}")
     markers = {"done": "✓", "in_progress": "▶", "failed": "✗", "pending": "·", "skipped": "−"}
-    for step in plan.steps:
-        marker = markers.get(step.status, "·")
-        suffix = f" — {step.result}" if step.result else ""
-        print(f"    {marker} {step.id} {step.description} {_dim(step.status)}{suffix}")
+    for task in state.tasks:
+        marker = markers.get(task.status, "·")
+        suffix = f" — {task.result}" if task.result else ""
+        print(f"    {marker} {task.id} {task.description} {_dim(task.status)}{suffix}")
 
 
 def new_agent(registry: ToolRegistry | None = None, max_turns: int | None = None) -> AgentState:
@@ -199,6 +211,12 @@ def main() -> int:
         register_networked_tools(registry, base_url=mcp_base, api_key=os.environ.get("MCP_API_KEY"))
 
     provider = LlamaCppProvider(registry=registry, stream=True)
+    from tools import register_subagent_tool
+
+    register_subagent_tool(
+        registry,
+        provider_factory=lambda: LlamaCppProvider(registry=registry, stream=False),
+    )
     state = new_agent(registry)
     print_header(state)
     print(_dim("  local agent - /help for commands - Ctrl-C stops generation"))

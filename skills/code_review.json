@@ -1,0 +1,6 @@
+{
+  "name": "code_review",
+  "description": "Read the code under the file root and report issues; never writes files.",
+  "prompt": "Use read_file, list_dir, glob, and grep to locate and read the relevant code, then report findings as a concise list of issues with file:line references. Do not modify anything.",
+  "tools": ["read_file", "list_dir", "glob", "grep"]
+}

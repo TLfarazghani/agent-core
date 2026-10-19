@@ -151,6 +151,19 @@ class ToolRegistry:
                 tool_call_id=call.id,
                 content=f"error: unknown tool '{call.name}'",
             )
+        allowlist = getattr(state, "tool_allowlist", None)
+        if allowlist is not None and call.name not in allowlist:
+            # Phase 10: a skill's tool allowlist denies the call outright. This
+            # is a restriction, not an approval bypass -- anything allowed still
+            # passes through the gate below.
+            return ChatMessage(
+                role="tool",
+                tool_call_id=call.id,
+                content=(
+                    f"error: tool '{call.name}' is not allowed by the active "
+                    f"skill (allowed: {', '.join(sorted(allowlist)) or 'none'})"
+                ),
+            )
         invalid = self._validate_call(call, definition)
         if invalid is not None:
             return ChatMessage(role="tool", tool_call_id=call.id, content=invalid)

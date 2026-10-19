@@ -28,6 +28,7 @@ from .sessions import (
     refresh_agent_bio,
 )
 from .state import PERMISSION_MODES, AgentState, ChatMessage
+from .tasks import VALID_TASK_STATUSES, create_task, render_tasks, update_task
 from .tool_registry import ToolRegistry
 
 DEFAULT_MAX_CONTEXT_TOKENS = 32768
@@ -182,6 +183,30 @@ def _plan(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult(text="\n".join(lines))
 
 
+def _tasks(ctx: CommandContext, arg: str) -> CommandResult:
+    arg = arg.strip()
+    if not arg:
+        return CommandResult(text=render_tasks(ctx.state))
+    parts = arg.split()
+    if (
+        len(parts) >= 2
+        and parts[0].startswith("task_")
+        and parts[1] in VALID_TASK_STATUSES
+    ):
+        result = " ".join(parts[2:]) or None
+        try:
+            update_task(ctx.state, parts[0], parts[1], result=result)
+        except ValueError as exc:
+            return CommandResult(text=str(exc), error=True)
+        return CommandResult(text=render_tasks(ctx.state), save=True)
+    description = parts[1] if parts[0].lower() == "add" and len(parts) > 1 else arg
+    try:
+        task = create_task(ctx.state, description)
+    except ValueError as exc:
+        return CommandResult(text=str(exc), error=True)
+    return CommandResult(text=f"Added {task.id}: {task.description}", save=True)
+
+
 def _memory(ctx: CommandContext, arg: str) -> CommandResult:
     text = recall_bounded(arg.strip(), memory_dir=ctx.memory_dir, max_tokens=1024)
     if not text:
@@ -235,6 +260,7 @@ _COMMANDS = (
     Command("/status", "live self snapshot", "/status", _status),
     Command("/context", "token budget usage", "/context", _context),
     Command("/plan", "render the current plan", "/plan", _plan),
+    Command("/tasks", "list/add/update the task backlog", "/tasks [add <text>|task_N <status>]", _tasks),
     Command("/memory", "recall long-term memory", "/memory [topic]", _memory),
     Command("/approve", "approve the pending call", "/approve", _approve),
     Command("/reject", "reject the pending call", "/reject", _reject),

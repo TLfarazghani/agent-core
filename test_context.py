@@ -9,7 +9,14 @@ input. Runnable directly or via pytest.
 from __future__ import annotations
 
 from core import ChatMessage, ToolCall
-from core.context import estimate_message_tokens, estimate_tokens, trim_to_budget
+from core.context import (
+    SUMMARY_PREFIX,
+    compact_to_budget,
+    estimate_message_tokens,
+    estimate_tokens,
+    should_compact,
+    trim_to_budget,
+)
 
 
 def system() -> ChatMessage:
@@ -149,6 +156,75 @@ def test_trim_does_not_mutate_input() -> None:
     msgs = [system(), user("a"), assistant("b"), user("c"), assistant("d")]
     snapshot = [m.model_copy(deep=True) for m in msgs]
     trim_to_budget(msgs, estimate_tokens([msgs[0], msgs[3], msgs[4]]))
+    assert msgs == snapshot
+
+
+def test_compact_replaces_dropped_turns_with_summary() -> None:
+    msgs = [system(), user("first"), assistant("one"), user("last"), assistant("two")]
+    assert should_compact(msgs, 1) is True
+    kept, dropped, summary = compact_to_budget(msgs, 1, "they asked about first")
+    assert dropped == [user("first"), assistant("one")]
+    assert summary == "they asked about first"
+    assert kept[0] == system()
+    assert kept[1].role == "system"
+    assert kept[1].content.startswith(SUMMARY_PREFIX)
+    assert kept[2:] == [user("last"), assistant("two")]
+
+
+def test_compact_no_drop_is_plain_trim() -> None:
+    msgs = [system(), user("a"), assistant("b")]
+    kept, dropped, summary = compact_to_budget(msgs, 100000, "ignored")
+    assert summary is None
+    assert dropped == []
+    assert kept == msgs
+    assert should_compact(msgs, 100000) is False
+
+
+def test_compact_summarizer_failure_falls_back_to_trim() -> None:
+    msgs = [system(), user("first"), assistant("one"), user("last"), assistant("two")]
+
+    def boom(_dropped):
+        raise RuntimeError("model down")
+
+    kept, dropped, summary = compact_to_budget(msgs, 1, boom)
+    assert summary is None
+    assert kept == [system(), user("last"), assistant("two")]
+    assert dropped == [user("first"), assistant("one")]
+
+
+def test_compact_never_splits_tool_pair() -> None:
+    msgs = [
+        system(),
+        user("first"),
+        assistant_with_call(),
+        tool_result(),
+        user("last"),
+        assistant("done"),
+    ]
+    kept, dropped, summary = compact_to_budget(msgs, 1, "summary")
+    assert dropped == [user("first"), assistant_with_call(), tool_result()]
+    assert kept[2:] == [user("last"), assistant("done")]
+
+
+def test_compact_supports_plain_dicts() -> None:
+    dict_msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "last"},
+        {"role": "assistant", "content": "two"},
+    ]
+    kept, dropped, summary = compact_to_budget(dict_msgs, 1, "sum")
+    assert isinstance(kept[1], dict)
+    assert kept[1]["role"] == "system"
+    assert kept[1]["content"].startswith(SUMMARY_PREFIX)
+    assert summary == "sum"
+
+
+def test_compact_does_not_mutate_input() -> None:
+    msgs = [system(), user("a"), assistant("b"), user("c"), assistant("d")]
+    snapshot = [m.model_copy(deep=True) for m in msgs]
+    compact_to_budget(msgs, 1, "s")
     assert msgs == snapshot
 
 

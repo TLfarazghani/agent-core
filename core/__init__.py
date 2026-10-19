@@ -1,6 +1,12 @@
 """agent-core: transport-agnostic local LFM2.5 agent core."""
 
-from .context import estimate_message_tokens, estimate_tokens, trim_to_budget
+from .context import (
+    compact_to_budget,
+    estimate_message_tokens,
+    estimate_tokens,
+    should_compact,
+    trim_to_budget,
+)
 from .commands import (
     COMMANDS,
     Command,
@@ -45,7 +51,12 @@ from .parser import (
 )
 from .planner import make_plan as planner_make_plan
 from .planner import update_plan as planner_update_plan
-from .reflection import lesson_from_state, maybe_emit_lesson
+from .reflection import (
+    extract_memories,
+    lesson_from_state,
+    maybe_emit_lesson,
+    maybe_extract_memories,
+)
 from .state import (
     DEFAULT_PERMISSION_MODE,
     PERMISSION_MODES,
@@ -55,9 +66,17 @@ from .state import (
     PermissionMode,
     Plan,
     PlanStep,
+    Task,
     ToolCall,
     ToolDefinition,
 )
+from .subagent import (
+    MAX_CONCURRENT_SUBAGENTS,
+    MAX_SUBAGENT_TURNS,
+    SubagentResult,
+    spawn_subagent,
+)
+from .tasks import create_task, list_tasks, render_tasks, update_task
 from .tool_registry import APPROVAL_MODES, HARDCODED_APPROVAL_TOOLS, ToolRegistry, takes_state
 
 __all__ = [
@@ -73,6 +92,8 @@ __all__ = [
     "GenerateProvider",
     "HARDCODED_APPROVAL_TOOLS",
     "KINDS",
+    "MAX_CONCURRENT_SUBAGENTS",
+    "MAX_SUBAGENT_TURNS",
     "MaxTurnsError",
     "MEMORY_DIR",
     "PERMISSION_MODES",
@@ -83,15 +104,20 @@ __all__ = [
     "Plan",
     "PlanStep",
     "RETRY_ONCE_LIMIT",
+    "SubagentResult",
+    "Task",
     "ToolCall",
     "ToolDefinition",
     "ToolRegistry",
     "agent_bio",
     "command_names",
+    "compact_to_budget",
+    "create_task",
     "current_time",
     "estimate_message_tokens",
     "estimate_tokens",
     "extract_blocks",
+    "extract_memories",
     "finalize_turn",
     "has_tool_call_blocks",
     "help_text",
@@ -99,8 +125,10 @@ __all__ = [
     "is_command",
     "lesson_from_state",
     "list_memories",
+    "list_tasks",
     "load_memory",
     "maybe_emit_lesson",
+    "maybe_extract_memories",
     "memory_path",
     "new_state",
     "parse_command",
@@ -110,13 +138,17 @@ __all__ = [
     "planner_update_plan",
     "recall_bounded",
     "recall_memories",
+    "render_tasks",
     "resolve_approval",
     "run",
     "run_command",
     "save_memory",
+    "should_compact",
     "should_stop_after_retries",
+    "spawn_subagent",
     "step",
     "takes_state",
     "trim_to_budget",
+    "update_task",
     "user_message",
 ]

@@ -35,6 +35,9 @@ from .files import (
     make_read_file_handler,
     make_write_file_handler,
 )
+from .skills import SKILL_TOOLS, register_skills_tools
+from .subagent import AGENT_TOOLS, register_subagent_tool
+from .tasks import TASK_TOOLS, register_task_tools
 
 WEB_TOOLS = {"web_search", "fetch_url"}
 NETWORKED_TOOLS = {"send_email", "send_message"}

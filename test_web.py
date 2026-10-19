@@ -630,8 +630,28 @@ def test_commands_listed() -> None:
     try:
         payload = server.get("/api/commands")
         names = {entry["name"] for entry in payload["commands"]}
-        assert {"/help", "/mode", "/tools", "/approve", "/reject"} <= names
+        assert {"/help", "/mode", "/tools", "/approve", "/reject", "/tasks"} <= names
         assert "/help" in payload["help"]
+    finally:
+        server.stop()
+
+
+def test_skills_listed() -> None:
+    server = _TestServer()
+    try:
+        payload = server.get("/api/skills")
+        names = {skill["name"] for skill in payload["skills"]}
+        assert "web_research" in names
+    finally:
+        server.stop()
+
+
+def test_agent_tool_registered_by_server() -> None:
+    server = _TestServer()
+    try:
+        payload = server.get("/api/tools")
+        names = {tool["name"] for tool in payload["tools"]}
+        assert "agent" in names
     finally:
         server.stop()
 

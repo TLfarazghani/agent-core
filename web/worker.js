@@ -42,6 +42,9 @@ import { runCommand } from "./commands.js";
 import { estimateTokens } from "./context.js";
 import { recallBounded, saveMemory as memorySave } from "./memory.js";
 import { makePlan as planMake, updatePlan as planUpdate } from "./planner.js";
+import { activateSkill, loadSkills, renderSkills } from "./skills.js";
+import { spawnSubagent } from "./subagent.js";
+import { createTask, renderTasks, updateTask } from "./tasks.js";
 
 const { parse_tool_calls } = self.AgentParser;
 
@@ -163,6 +166,9 @@ const BROWSER_TOOLS = {
         max_context_tokens: ONNX_CONTEXT_TOKENS,
         pending_approval: state.pending_approval,
         plan: state.plan,
+        tasks: state.tasks,
+        tool_allowlist: state.tool_allowlist,
+        active_subagents: state.active_subagents,
         tools: Object.keys(BROWSER_TOOLS).sort(),
       };
       return JSON.stringify(snapshot, null, 2);
@@ -229,7 +235,93 @@ const BROWSER_TOOLS = {
       }
     },
   },
+  agent: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) => {
+      try {
+        const result = await spawnSubagent(
+          state,
+          String(args.goal || ""),
+          {
+            provider: { generate },
+            tools: BROWSER_TOOLS,
+            parser: { parse_tool_calls },
+            model: MODEL_ID,
+            max_context_tokens: ONNX_CONTEXT_TOKENS,
+          },
+          { maxTurns: args.max_turns }
+        );
+        if (result.status === "needs_approval" && result.pending) {
+          state.pending_approval = result.pending;
+        }
+        return result.summary;
+      } catch (err) {
+        return `error: ${err && err.message ? err.message : String(err)}`;
+      }
+    },
+  },
+  list_skills: {
+    requires_approval: false,
+    read_only: true,
+    stateful: true,
+    run: async () => renderSkills(await loadBrowserSkills()),
+  },
+  run_skill: {
+    requires_approval: false,
+    stateful: true,
+    run: async (state, args) =>
+      activateSkill(state, String(args.name || ""), await loadBrowserSkills()),
+  },
+  task_create: {
+    requires_approval: false,
+    read_only: true,
+    stateful: true,
+    run: async (state, args) => {
+      try {
+        const task = createTask(state, args.description);
+        return `task created: ${JSON.stringify(task)}`;
+      } catch (err) {
+        return `error: ${err && err.message ? err.message : String(err)}`;
+      }
+    },
+  },
+  task_update: {
+    requires_approval: false,
+    read_only: true,
+    stateful: true,
+    run: async (state, args) => {
+      try {
+        const task = updateTask(state, args.id, args.status, args.result);
+        return `task ${task.id} -> ${task.status}`;
+      } catch (err) {
+        return `error: ${err && err.message ? err.message : String(err)}`;
+      }
+    },
+  },
+  task_list: {
+    requires_approval: false,
+    read_only: true,
+    stateful: true,
+    run: async (state) => renderTasks(state),
+  },
 };
+
+/* Skills are static config served by the host (GET /api/skills); the browser
+ * cannot read the skills/ directory directly. Cached after first fetch. */
+let browserSkills = null;
+
+async function loadBrowserSkills() {
+  if (browserSkills) return browserSkills;
+  try {
+    const resp = await fetch("/api/skills");
+    const data = await resp.json();
+    browserSkills = loadSkills(Array.isArray(data.skills) ? data.skills : []);
+  } catch (_) {
+    browserSkills = {};
+  }
+  return browserSkills;
+}
 
 /* Tool schemas handed to the model through apply_chat_template, mirroring
  * tools/registry.json (subset available in-browser). */
@@ -368,6 +460,79 @@ const TOOL_SCHEMAS = [
         },
         required: ["step_id", "status"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "agent",
+      description:
+        "Spawn a bounded, one-level sub-agent to complete a goal and return its summary. Approval-gated tools inside the sub-agent bubble up to this session's approval gate.",
+      parameters: {
+        type: "object",
+        properties: {
+          goal: { type: "string", minLength: 1 },
+          max_turns: { type: "integer", minimum: 1 },
+        },
+        required: ["goal"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_skill",
+      description:
+        "Activate a named skill: inject its prompt and constrain the available tools to the skill's allowlist for this turn. An allowlist, not an approval bypass.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", minLength: 1 } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_skills",
+      description: "List installed skills (name, description, tool allowlist). Read-only.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_create",
+      description: "Add a task to the session backlog (distinct from the plan).",
+      parameters: {
+        type: "object",
+        properties: { description: { type: "string", minLength: 1 } },
+        required: ["description"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_update",
+      description: "Update a task's status (optionally with a short result).",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", minLength: 1 },
+          status: { type: "string", enum: ["pending", "in_progress", "done", "failed", "skipped"] },
+          result: { type: "string" },
+        },
+        required: ["id", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_list",
+      description: "List the session task backlog. Read-only.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
 ];

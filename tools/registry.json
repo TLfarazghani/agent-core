@@ -328,5 +328,80 @@
       },
       "required": ["pattern"]
     }
+  },
+  {
+    "name": "agent",
+    "description": "Spawn a bounded, one-level sub-agent to complete a goal and return its summary. Approval-gated tools inside the sub-agent bubble up to this session's approval gate.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "max_turns": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["goal"]
+    }
+  },
+  {
+    "name": "run_skill",
+    "description": "Activate a named skill: inject its prompt and constrain the available tools to the skill's allowlist for this turn. An allowlist, not an approval bypass.",
+    "requires_approval": false,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }
+      },
+      "required": ["name"]
+    }
+  },
+  {
+    "name": "list_skills",
+    "description": "List installed skills (name, description, tool allowlist). Read-only.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
+  },
+  {
+    "name": "task_create",
+    "description": "Add a task to the session backlog (distinct from the plan). Does not require approval.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string", "minLength": 1 }
+      },
+      "required": ["description"]
+    }
+  },
+  {
+    "name": "task_update",
+    "description": "Update a task's status (optionally with a short result). Does not require approval.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["pending", "in_progress", "done", "failed", "skipped"] },
+        "result": { "type": "string" }
+      },
+      "required": ["id", "status"]
+    }
+  },
+  {
+    "name": "task_list",
+    "description": "List the session task backlog. Read-only.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    }
   }
 ]

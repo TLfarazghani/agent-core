@@ -63,6 +63,10 @@ function newState({ session_id, model, max_turns = 8, permission_mode = "default
     pending_calls: [],
     retry_count: 0,
     plan: null,
+    /* Phase 10/11: skill allowlist (turn-scoped), sub-agent cap, task backlog. */
+    tool_allowlist: null,
+    active_subagents: 0,
+    tasks: [],
     permission_mode: PERMISSION_MODES.includes(permission_mode) ? permission_mode : "default",
   };
 }
@@ -137,6 +141,17 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
       emit("tool_result", { call_id: call.id, content, error: true });
       return;
     }
+    if (state.tool_allowlist && !state.tool_allowlist.includes(call.name)) {
+      /* Phase 10: a skill's allowlist denies the call. A restriction, not an
+       * approval bypass — anything allowed still runs the gate below. */
+      const content = `error: tool '${call.name}' is not allowed by the active skill (allowed: ${
+        state.tool_allowlist.join(", ") || "none"
+      })`;
+      state.retry_count += 1;
+      append({ role: "tool", tool_call_id: call.id, content });
+      emit("tool_result", { call_id: call.id, content, error: true });
+      return;
+    }
     if (requiresApproval(tool, call.name, state)) {
       state.pending_approval = {
         call_id: call.id,
@@ -173,7 +188,11 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
       return;
     }
     const lastBefore = state.messages[state.messages.length - 1];
-    if (lastBefore && lastBefore.role === "user") state.retry_count = 0;
+    if (lastBefore && lastBefore.role === "user") {
+      state.retry_count = 0;
+      /* Phase 10: a skill allowlist lasts only the turn it was activated in. */
+      state.tool_allowlist = null;
+    }
     const trimmed = trimToBudget(state.messages, max_context_tokens);
     const assistant = await provider.generate(trimmed.kept, (text) =>
       emit("token", { text })

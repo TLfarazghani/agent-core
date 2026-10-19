@@ -73,6 +73,7 @@ All commands come from the shared table in `core/commands.py` (Phase 8), so the 
 | `/mode [default\|plan\|auto\|strict]` | Show or set the permission mode |
 | `/tools` | List registered tools (name, description, `approval`/`read-only` flags) |
 | `/status` | Live self snapshot (`inspect_self`) |
+| `/tasks` | Show the task backlog (`/tasks add <text>`, `/tasks task_N <status>`) |
 | `/context` | Token budget usage + current mode |
 | `/plan` | Render `AgentState.plan` |
 | `/memory [topic]` | Recall long-term memory |
@@ -152,6 +153,8 @@ All commands come from the shared table in `core/commands.py` (Phase 8), so the 
 **Plan card (Phase 5):**
 - When `AgentState.plan` is set, both UIs render a plan block above the message flow: goal + one row per step with its status marker (`·` pending / `▶` in_progress / `✓` done / `✗` failed / `−` skipped) and any per-step result. CLI prints it after each turn; the web UI renders it in `renderMessages`.
 - **Turn budget vs plan length:** each plan step is bookkeeping only. A step that calls a tool still hits the hardcoded approval gate independently (no plan-based approval bypass), and every generate+execute cycle consumes a turn — so a plan longer than `max_turns` will be interrupted by the turn cap and must be resumed in a new session. UIs surface `turn_count/max_turns` so a long plan's progress is visible before the cap hits.
+
+**Task backlog (Phase 11):** `AgentState.tasks` is a durable backlog distinct from `plan`. Both UIs render it as rows of `task_N` + description + status; the CLI prints it via `render_tasks` alongside the plan, and the web UI renders it in `renderMessages` / the sidebar. `/tasks` (and `task_create`/`task_update`/`task_list`) mutate it, and it serializes with the session so it survives resume. A sub-agent (`agent` tool) is invisible to the user except for its tool cards; a gated tool it needs surfaces as a normal approval on the parent session. A skill (`run_skill`) narrows the tool set — the UI shows which tools are currently allowed while a skill is active.
 
 ### 2.4 States
 

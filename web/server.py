@@ -16,6 +16,8 @@ Endpoints
     GET  /api/tools                 -> registered tool definitions
     GET  /api/search?q=..&kind=..   -> web/news/wikipedia search (no key)
     GET  /api/fetch?url=..          -> fetch a page as plain text
+    GET  /api/commands              -> shared slash-command list (Phase 8)
+    GET  /api/skills                -> available skills (Phase 10)
     POST /api/file                  -> run a file tool {"tool", "arguments", "approved"} (Phase 9)
     POST /api/sessions              -> create a session (body: optional {"max_turns": int})
     GET  /api/sessions              -> list saved sessions
@@ -155,6 +157,12 @@ class AgentApp:
                 self.registry, base_url=mcp_base, api_key=os.environ.get("MCP_API_KEY")
             )
         self.provider_factory = provider_factory or default_provider_factory(self.registry)
+        from tools import register_subagent_tool
+
+        register_subagent_tool(
+            self.registry,
+            provider_factory=lambda: self.provider_factory(lambda _token: None),
+        )
         self.health_check = health_check or default_health_check
         self.max_context_tokens = default_max_context_tokens()
         self._sessions: dict[str, AgentState] = {}
@@ -542,6 +550,10 @@ class Handler(BaseHTTPRequestHandler):
                     "help": help_text(),
                 },
             )
+        if path == "/api/skills":
+            from tools.skills import load_skills
+
+            return self._send_json(200, {"skills": list(load_skills().values())})
         if path == "/api/sessions":
             return self._send_json(200, {"sessions": list_sessions()})
         if path.startswith("/api/sessions/"):

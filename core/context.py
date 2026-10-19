@@ -107,3 +107,60 @@ def trim_to_budget(
     kept = [m for i, m in enumerate(messages) if i in kept_indices]
     dropped = [m for i, m in enumerate(messages) if i not in kept_indices]
     return kept, dropped
+
+
+SUMMARY_PREFIX = "Summary of earlier conversation:"
+
+
+def should_compact(messages: Sequence[Any], budget_tokens: int | None) -> bool:
+    """True when ``trim_to_budget`` would drop any whole turn (Phase 11)."""
+    _, dropped = trim_to_budget(messages, budget_tokens)
+    return bool(dropped)
+
+
+def _system_message(template: Any, content: str) -> Any:
+    if isinstance(template, dict):
+        return {"role": "system", "content": content}
+    from .state import ChatMessage  # local import keeps plain-dict users working
+
+    return ChatMessage(role="system", content=content)
+
+
+def compact_to_budget(
+    messages: Sequence[Any],
+    budget_tokens: int | None,
+    summarize: Any,
+) -> tuple[list[Any], list[Any], "str | None"]:
+    """Phase 6b: replace dropped turns with one summary, not nothing.
+
+    ``trim_to_budget`` keeps whole user turns and always keeps the system prefix
+    and the in-flight turn (so a live approval gate is never compacted and a
+    tool/assistant pair is never split). When it would drop turns, this calls
+    ``summarize(dropped_messages) -> str`` (a caller-supplied one-extra-generate
+    callback) and splices the result in as a single system message right after
+    the system prefix.
+
+    Returns ``(kept, dropped, summary)``. When nothing is dropped, or
+    ``summarize`` returns falsy, it falls back to a plain trim with
+    ``summary=None``. Never mutates its input.
+    """
+    kept, dropped = trim_to_budget(messages, budget_tokens)
+    if not dropped:
+        return kept, dropped, None
+    try:
+        summary = summarize(dropped) if callable(summarize) else summarize
+    except Exception:  # noqa: BLE001 - compaction must never break the request
+        return kept, dropped, None
+    if not summary:
+        return kept, dropped, None
+
+    prefix_end = 0
+    for i, message in enumerate(messages):
+        if _attr(message, "role", None) == "user":
+            prefix_end = i
+            break
+    summary_message = _system_message(
+        messages[0] if messages else None, f"{SUMMARY_PREFIX}\n{summary}"
+    )
+    compacted = list(kept[:prefix_end]) + [summary_message] + list(kept[prefix_end:])
+    return compacted, dropped, summary

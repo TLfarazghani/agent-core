@@ -1,0 +1,6 @@
+{
+  "name": "web_research",
+  "description": "Search the web and read the best pages before answering.",
+  "prompt": "Research the question using web_search (kind='web' or 'news'), then use fetch_url on the most relevant result when a snippet is not enough. Cite the sources you used and end with a short synthesis.",
+  "tools": ["web_search", "fetch_url", "remember", "recall", "make_plan", "update_plan"]
+}

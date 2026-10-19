@@ -18,7 +18,7 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from core import AgentState, ChatMessage, ToolCall, ToolRegistry
-from core.context import trim_to_budget
+from core.context import compact_to_budget, trim_to_budget
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,13 @@ DEFAULT_REPETITION_PENALTY = 1.05
 DEFAULT_MAX_CONTEXT_TOKENS = 32768
 
 TokenSink = Callable[[str], None]
+
+
+def default_compaction_enabled() -> bool:
+    """Phase 6b: opt-in compaction (``AGENT_CORE_COMPACT=1``) replaces dropped
+    turns with a one-extra-generate summary instead of silently forgetting."""
+    raw = os.environ.get("AGENT_CORE_COMPACT", "")
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def default_max_context_tokens() -> int:
@@ -147,6 +154,7 @@ class LlamaCppProvider:
         max_context_tokens: int | None = None,
         stream: bool = True,
         stream_callback: TokenSink | None = None,
+        compaction: bool | None = None,
     ) -> None:
         self.registry = registry
         self.temperature = temperature
@@ -161,6 +169,10 @@ class LlamaCppProvider:
         )
         self.stream = stream
         self.stream_callback = stream_callback
+        self.compaction = (
+            default_compaction_enabled() if compaction is None else compaction
+        )
+        self._summarizing = False
         self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=120)
         self.last_usage: dict[str, int] = {}
         self.last_latency_s: float = 0.0
@@ -172,13 +184,60 @@ class LlamaCppProvider:
         )
         self._sampling = explicit or None
 
+    def _summarize(self, model: str, dropped: list[ChatMessage]) -> str:
+        """One non-streaming generate that summarizes dropped turns.
+
+        Guarded by ``_summarizing`` so a summarize request can never recurse
+        into compaction, and never raises: any failure falls back to a plain
+        trim (the summary is simply omitted).
+        """
+        if self._summarizing:
+            return ""
+        self._summarizing = True
+        try:
+            transcript = "\n".join(
+                f"{message.role}: {message.content or ''}"
+                for message in dropped
+                if message.content or message.function_calls
+            )
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Summarize the earlier conversation in a few "
+                            "sentences. Preserve facts, decisions, user "
+                            "preferences, and any unfinished tasks."
+                        ),
+                    },
+                    {"role": "user", "content": transcript[:8000]},
+                ],
+                temperature=0.1,
+                max_tokens=256,
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001 - compaction must never break the turn
+            return ""
+        finally:
+            self._summarizing = False
+
     def __call__(self, state: AgentState) -> ChatMessage:
-        kept, dropped = trim_to_budget(state.messages, self.max_context_tokens)
+        if self.compaction:
+            kept, dropped, summary = compact_to_budget(
+                state.messages,
+                self.max_context_tokens,
+                lambda dropped: self._summarize(state.model, dropped),
+            )
+        else:
+            kept, dropped = trim_to_budget(state.messages, self.max_context_tokens)
+            summary = None
         if dropped:
             logger.info(
-                "trimmed %d old message(s) to fit %d-token context budget",
+                "trimmed %d old message(s) to fit %d-token context budget%s",
                 len(dropped),
                 self.max_context_tokens,
+                " (compacted into a summary)" if summary else "",
             )
         messages = [_to_openai_message(message) for message in kept]
         tools = _to_openai_tools(self.registry)
@@ -274,12 +333,17 @@ class LlamaCppProvider:
 
 
 def default_registry() -> ToolRegistry:
-    """Full local registry (web search + doc-gen + run_code + cognitive + files)."""
+    """Full local registry (web search + doc-gen + run_code + cognitive + files
+    + skills + tasks). The ``agent`` (sub-agent) tool is transport-registered
+    because it needs a provider -- see ``tools.subagent.register_subagent_tool``.
+    """
     from tools import (
         register_cognitive_tools,
         register_docgen_tools,
         register_files_tools,
         register_runcode_tool,
+        register_skills_tools,
+        register_task_tools,
         register_web_tools,
     )
 
@@ -289,4 +353,6 @@ def default_registry() -> ToolRegistry:
     register_runcode_tool(registry)
     register_cognitive_tools(registry)
     register_files_tools(registry)
+    register_skills_tools(registry)
+    register_task_tools(registry)
     return registry

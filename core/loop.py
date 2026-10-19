@@ -33,9 +33,10 @@ def _note_tool_result(state: AgentState, tool_msg: ChatMessage | None) -> None:
 def finalize_turn(state: AgentState, memory_dir=None) -> None:
     """Reflection hook at a terminal state. Bounded; never raises."""
     try:
-        from .reflection import maybe_emit_lesson
+        from .reflection import maybe_emit_lesson, maybe_extract_memories
 
         maybe_emit_lesson(state, memory_dir=memory_dir)
+        maybe_extract_memories(state, memory_dir=memory_dir)
     except Exception:  # noqa: BLE001 - reflection must never block the loop
         pass
 
@@ -71,6 +72,9 @@ def step(
     last_before = state.messages[-1] if state.messages else None
     if last_before is not None and last_before.role == "user":
         state.retry_count = 0
+        # Phase 10: a skill's tool allowlist lasts only for the turn it was
+        # activated in; a new user turn clears it.
+        state.tool_allowlist = None
 
     response = provider(state)
     state.messages.append(response)
@@ -79,10 +83,13 @@ def step(
     for i, call in enumerate(response.function_calls or []):
         tool_msg = registry.dispatch(state, call)
         _note_tool_result(state, tool_msg)
-        if tool_msg is None:
-            # Approval parked for this call. Keep the calls after it in this
-            # turn so resolve_approval() can resume them (fixes silent loss
-            # of multi-call turns: [run_code, echo] used to drop echo).
+        if tool_msg is None or state.pending_approval is not None:
+            # Approval parked for this call -- either the call itself was
+            # gated (tool_msg is None) or a handler (the ``agent`` tool)
+            # bubbled a sub-agent's pending approval up. Keep the calls after
+            # it so resolve_approval() can resume them.
+            if tool_msg is not None:
+                state.messages.append(tool_msg)
             state.pending_calls = list((response.function_calls or [])[i + 1 :])
             break
         state.messages.append(tool_msg)

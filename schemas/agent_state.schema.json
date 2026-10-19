@@ -72,6 +72,36 @@
           }
         }
       }
+    },
+    "tasks": {
+      "type": "array",
+      "default": [],
+      "description": "Phase 11 task backlog, distinct from plan. Persists with the session.",
+      "items": {
+        "type": "object",
+        "required": ["id", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "description": { "type": "string" },
+          "status": {
+            "enum": ["pending", "in_progress", "done", "failed", "skipped"],
+            "default": "pending"
+          },
+          "result": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "active_subagents": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Phase 10: number of sub-agents currently running (one level deep; inspection only)."
+    },
+    "tool_allowlist": {
+      "type": ["array", "null"],
+      "default": null,
+      "items": { "type": "string" },
+      "description": "Phase 10: when set, dispatch denies tools not in this list (a skill's allowlist). Not an approval bypass."
     }
   }
 }

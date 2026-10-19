@@ -70,6 +70,22 @@ class Plan(BaseModel):
     steps: list[PlanStep] = Field(default_factory=list)
 
 
+class Task(BaseModel):
+    """One tracked task (Phase 11).
+
+    Distinct from ``Plan``: a plan is a single ordered procedure for the
+    current request; ``tasks`` is a lightweight backlog that persists with the
+    session across resumes and survives ``/new``-less reloads.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    description: str
+    status: StepStatus = "pending"
+    result: Optional[str] = None
+
+
 class AgentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -84,3 +100,6 @@ class AgentState(BaseModel):
     retry_count: int = 0
     plan: Optional[Plan] = None
     permission_mode: PermissionMode = DEFAULT_PERMISSION_MODE
+    tasks: list[Task] = Field(default_factory=list)
+    active_subagents: int = 0
+    tool_allowlist: Optional[list[str]] = None

@@ -12,9 +12,12 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createEngine, newState, requiresApproval, PERMISSION_MODES } from "./web/engine.js";
-import { estimateTokens, trimToBudget } from "./web/context.js";
+import { compactToBudget, estimateTokens, shouldCompact, trimToBudget } from "./web/context.js";
 import { makePlan, updatePlan } from "./web/planner.js";
 import { COMMANDS, helpText, parseCommand, runCommand } from "./web/commands.js";
+import { activateSkill, loadSkills, renderSkills } from "./web/skills.js";
+import { createTask, renderTasks, updateTask } from "./web/tasks.js";
+import { MAX_CONCURRENT_SUBAGENTS, spawnSubagent } from "./web/subagent.js";
 
 const require = createRequire(import.meta.url);
 const Parser = require("./web/parser.js");
@@ -437,7 +440,7 @@ async function test_engine_set_permission_mode() {
 async function test_commands_registry_parity() {
   const names = Object.keys(COMMANDS);
   assert.deepEqual(names.sort(), [
-    "/context", "/help", "/memory", "/mode", "/new", "/plan", "/status", "/tools", "/turns",
+    "/context", "/help", "/memory", "/mode", "/new", "/plan", "/status", "/tasks", "/tools", "/turns",
   ]);
   assert.deepEqual(parseCommand("/turns 3"), { name: "/turns", arg: "3" });
   assert.deepEqual(parseCommand("  /mode  plan "), { name: "/mode", arg: "plan" });
@@ -477,6 +480,154 @@ async function test_command_plan_and_status_render() {
   assert.ok(runCommand("/tools", state, { tools: TOOLS }).text.includes("run_code"));
 }
 
+/* ---------- Phase 10: skills + sub-agents (core/skills, core/subagent ports) ---------- */
+
+async function test_phase10_skill_allowlist_denies_other_tools() {
+  const provider = {
+    generate: async () => ({
+      role: "assistant",
+      content: '<|tool_call_start|>mutate(text="x")<|tool_call_end|>',
+    }),
+  };
+  const { engine, events } = makeEngine(provider);
+  engine.state.tool_allowlist = ["echo"];
+  await engine.start();
+  const result = events.find(([e]) => e === "tool_result");
+  assert.ok(result[1].content.includes("not allowed by the active skill"), result[1].content);
+  assert.ok(!events.some(([e]) => e === "approval"), "allowlist denial is not an approval");
+}
+
+async function test_phase10_skill_allowlist_allows_listed_tool() {
+  const blocks = ['<|tool_call_start|>echo(text="hi")<|tool_call_end|>', "done."];
+  const provider = { generate: async () => ({ role: "assistant", content: blocks.shift() }) };
+  const { engine, events } = makeEngine(provider);
+  engine.state.tool_allowlist = ["echo"];
+  await engine.start();
+  const result = events.find(([e]) => e === "tool_result");
+  assert.equal(result[1].content, "echo: hi");
+}
+
+async function test_phase10_allowlist_cleared_on_new_user_turn() {
+  const provider = { generate: async () => ({ role: "assistant", content: "hi" }) };
+  const { engine } = makeEngine(provider);
+  engine.state.tool_allowlist = ["echo"];
+  engine.addUserMessage("go");
+  await engine.start();
+  assert.equal(engine.state.tool_allowlist, null);
+}
+
+async function test_phase10_skills_module_parity() {
+  const skills = loadSkills([
+    { name: "research", description: "do research", prompt: "Be thorough", tools: ["echo"] },
+  ]);
+  const state = newState({});
+  const msg = activateSkill(state, "research", skills);
+  assert.ok(msg.includes("Allowed tools: echo"));
+  assert.deepEqual(state.tool_allowlist, ["echo"]);
+  assert.ok(state.messages.at(-1).content.includes("Be thorough"));
+  assert.ok(activateSkill(state, "missing", skills).startsWith("error: unknown skill"));
+  assert.ok(renderSkills(skills).includes("research"));
+}
+
+function fakeChildEngine(assistantTexts) {
+  const state = newState({});
+  return {
+    state,
+    start: async () => {
+      for (const content of assistantTexts) state.messages.push({ role: "assistant", content });
+    },
+  };
+}
+
+async function test_phase10_subagent_returns_summary() {
+  const parent = newState({});
+  const child = fakeChildEngine(["working...", "final summary"]);
+  const result = await spawnSubagent(parent, "do a thing", { createEngine: () => child });
+  assert.equal(result.status, "ok");
+  assert.equal(result.summary, "final summary");
+  assert.equal(parent.active_subagents, 0, "parent counter restored");
+  assert.equal(child.state.active_subagents, MAX_CONCURRENT_SUBAGENTS, "one level deep");
+}
+
+async function test_phase10_subagent_bubbles_approval() {
+  const parent = newState({});
+  const child = fakeChildEngine([]);
+  child.state.pending_approval = { call_id: "c1", tool_name: "run_code", arguments: {} };
+  const result = await spawnSubagent(parent, "run it", { createEngine: () => child });
+  assert.equal(result.status, "needs_approval");
+  assert.equal(result.pending.tool_name, "run_code");
+}
+
+async function test_phase10_subagent_rejects_nesting_and_empty_goal() {
+  const parent = newState({});
+  parent.active_subagents = MAX_CONCURRENT_SUBAGENTS;
+  const nested = await spawnSubagent(parent, "goal", { createEngine: () => fakeChildEngine([]) });
+  assert.equal(nested.status, "rejected");
+
+  const empty = await spawnSubagent(newState({}), "   ", { createEngine: () => fakeChildEngine([]) });
+  assert.equal(empty.status, "rejected");
+}
+
+/* ---------- Phase 11: compaction + tasks ---------- */
+
+async function test_phase11_compaction_replaces_dropped_with_summary() {
+  const msgs = [sys(), usr("first"), asst("one"), usr("last"), asst("two")];
+  assert.equal(shouldCompact(msgs, 1), true);
+  const { kept, dropped, summary } = compactToBudget(msgs, 1, "they asked about first");
+  assert.equal(summary, "they asked about first");
+  assert.deepEqual(dropped, [usr("first"), asst("one")]);
+  assert.equal(kept[0].role, "system");
+  assert.ok(kept[1].content.startsWith("Summary of earlier conversation:"));
+  assert.deepEqual(kept.slice(2), [usr("last"), asst("two")]);
+
+  const nothing = compactToBudget(msgs, 100000, "x");
+  assert.equal(nothing.summary, null);
+  assert.equal(nothing.dropped.length, 0);
+  assert.equal(nothing.kept.length, msgs.length);
+}
+
+async function test_phase11_compaction_never_splits_tool_pair() {
+  const msgs = [
+    sys(),
+    usr("q1"),
+    { role: "assistant", content: "", function_calls: [{ id: "c1", name: "echo", arguments: {} }] },
+    { role: "tool", tool_call_id: "c1", content: "echo: hi" },
+    asst("a1"),
+    usr("q2"),
+    asst("a2"),
+  ];
+  const { kept, dropped } = trimToBudget(msgs, 1);
+  assert.deepEqual(kept, [sys(), usr("q2"), asst("a2")]);
+  assert.deepEqual(dropped, msgs.slice(1, 5), "the whole earlier turn drops together");
+  const { kept: compacted } = compactToBudget(msgs, 1, "summary");
+  assert.deepEqual(compacted.slice(2), [usr("q2"), asst("a2")]);
+}
+
+async function test_phase11_tasks_module_parity() {
+  const state = newState({});
+  const t1 = createTask(state, "first task");
+  assert.equal(t1.id, "task_1");
+  assert.equal(t1.status, "pending");
+  assert.equal(createTask(state, "second").id, "task_2");
+  updateTask(state, "task_1", "done", "did it");
+  assert.equal(state.tasks[0].status, "done");
+  assert.equal(state.tasks[0].result, "did it");
+  assert.throws(() => updateTask(state, "task_9", "done"), /no task/);
+  assert.throws(() => updateTask(state, "task_1", "yolo"), /invalid task status/);
+  assert.ok(renderTasks(state).includes("task_1"));
+  assert.ok(renderTasks(newState({})).includes("No tasks"));
+}
+
+async function test_phase11_command_tasks() {
+  const state = newState({});
+  assert.ok(runCommand("/tasks", state).text.includes("No tasks"));
+  assert.ok(runCommand("/tasks add write docs", state).text.includes("task_1"));
+  const updated = runCommand("/tasks task_1 done", state);
+  assert.equal(state.tasks[0].status, "done");
+  assert.ok(updated.text.includes("[done]"));
+  assert.ok(runCommand("/tasks task_99 done", state).error, "unknown task id errors");
+}
+
 async function main() {
   const tests = [
     test_ordinary_tool_executes,
@@ -508,6 +659,17 @@ async function main() {
     test_command_mode_and_turns_mutate_state,
     test_command_new_requests_clear,
     test_command_plan_and_status_render,
+    test_phase10_skill_allowlist_denies_other_tools,
+    test_phase10_skill_allowlist_allows_listed_tool,
+    test_phase10_allowlist_cleared_on_new_user_turn,
+    test_phase10_skills_module_parity,
+    test_phase10_subagent_returns_summary,
+    test_phase10_subagent_bubbles_approval,
+    test_phase10_subagent_rejects_nesting_and_empty_goal,
+    test_phase11_compaction_replaces_dropped_with_summary,
+    test_phase11_compaction_never_splits_tool_pair,
+    test_phase11_tasks_module_parity,
+    test_phase11_command_tasks,
   ];
   let failures = 0;
   for (const test of tests) {

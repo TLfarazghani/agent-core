@@ -11,7 +11,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from core import AgentState, ToolCall, ToolRegistry, new_state
+from core import AgentState, ChatMessage, ToolCall, ToolRegistry, new_state
 from core.memory import (
     KINDS,
     list_memories,
@@ -206,6 +206,45 @@ def test_new_agent_state_without_memory_is_clean() -> None:
 
 def test_kinds_constant() -> None:
     assert KINDS == ("fact", "preference", "lesson", "session_summary")
+
+
+def test_extract_memories_heuristic_dedupes() -> None:
+    from core.reflection import extract_memories
+
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_dir = Path(tmp)
+        state = new_state(target="windows", model="test")
+        state.messages.append(
+            ChatMessage(role="user", content="I prefer short answers and I use Windows.")
+        )
+        first = extract_memories(state, memory_dir=memory_dir)
+        assert first, "expected at least one extracted memory"
+        assert all(entry["kind"] in ("fact", "preference") for entry in first)
+        # Re-running is idempotent: same key+content already on disk is skipped.
+        second = extract_memories(state, memory_dir=memory_dir)
+        assert second == []
+
+
+def test_extract_memories_without_candidates_is_empty() -> None:
+    from core.reflection import extract_memories
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state = new_state(target="windows", model="test")
+        state.messages.append(ChatMessage(role="user", content="what is 2+2?"))
+        assert extract_memories(state, memory_dir=Path(tmp)) == []
+
+
+def test_finalize_turn_extracts_memories() -> None:
+    from core.loop import finalize_turn
+
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_dir = Path(tmp)
+        state = new_state(target="windows", model="test")
+        state.messages.append(ChatMessage(role="user", content="My name is Ada."))
+        state.messages.append(ChatMessage(role="assistant", content="Hi Ada."))
+        finalize_turn(state, memory_dir=memory_dir)
+        keys = {entry["key"] for entry in list_memories(memory_dir)}
+        assert keys, "finalize_turn should have extracted a memory"
 
 
 def main() -> None:

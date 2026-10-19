@@ -262,6 +262,61 @@ def test_provider_trims_history_to_context_budget() -> None:
     assert "old turn" not in json.dumps(request["messages"])
 
 
+def test_provider_compacts_dropped_turns_when_enabled() -> None:
+    """Phase 6b: with compaction on, dropped turns are replaced by one summary
+    system message (composed by a second, non-streaming generate)."""
+    from windows.orchestrator import LlamaCppProvider
+
+    class FakeCompletions:
+        def __init__(self, client) -> None:
+            self.client = client
+
+        def create(self, **kwargs):
+            self.client.calls.append(kwargs)
+            return FakeResponse()
+
+    class FakeChoice:
+        def __init__(self, message) -> None:
+            self.message = message
+
+    class FakeResponse:
+        usage = None
+        choices = [FakeChoice(FakeMessage("a short summary"))]
+
+    class FakeChat:
+        def __init__(self, client) -> None:
+            self.completions = FakeCompletions(client)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+            self.chat = FakeChat(self)
+
+    registry: TR = default_registry()
+    provider = LlamaCppProvider(registry=registry, max_context_tokens=128, compaction=True)
+    provider.client = FakeClient()
+    state = AgentState(
+        target="windows",
+        model="LFM2.5-1.2B-Instruct",
+        messages=[
+            ChatMessage(role="system", content="sys"),
+            user_message("old turn " + "x" * 500),
+            ChatMessage(role="assistant", content="old reply"),
+            user_message("live question"),
+        ],
+    )
+    provider(state)
+    assert len(provider.client.calls) == 2, "one summarize + one real request"
+    summarize_call, request = provider.client.calls
+    assert "Summarize" in summarize_call["messages"][0]["content"]
+    contents = [m.get("content") for m in request["messages"]]
+    assert any(
+        isinstance(c, str) and c.startswith("Summary of earlier conversation:")
+        for c in contents
+    )
+    assert request["messages"][-1]["content"] == "live question"
+
+
 def test_provider_keeps_tool_pair_when_within_budget() -> None:
     """An assistant tool_calls + tool result within the kept window survives
     trimming intact (never split)."""

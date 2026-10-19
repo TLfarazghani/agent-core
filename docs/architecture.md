@@ -44,7 +44,7 @@ graph TB
 
 ```mermaid
 graph LR
-    P0["Phase 0 — Core<br/>AgentState + parser + registry + approval gate"] --> P1["Phase 1 — Networked tools<br/>search, email, messaging (MCP-remote)"] --> P2["Phase 2 — Local doc-gen<br/>docx/pptx"] --> P3["Phase 3 — Code execution + sandbox<br/>highest-risk, own subsystem"] --> P4["Phase 4 — Cross-platform parity<br/>Android + WebGPU ports"] --> P5["Phase 5 — Cognitive layer<br/>identity, memory, planning, reflection"] --> P6["Phase 6 — Context window<br/>token budget for long/resumed sessions"]
+    P0["Phase 0 — Core<br/>AgentState + parser + registry + approval gate"] --> P1["Phase 1 — Networked tools<br/>search, email, messaging (MCP-remote)"] --> P2["Phase 2 — Local doc-gen<br/>docx/pptx"] --> P3["Phase 3 — Code execution + sandbox<br/>highest-risk, own subsystem"] --> P4["Phase 4 — Cross-platform parity<br/>Android + WebGPU ports"] --> P5["Phase 5 — Cognitive layer<br/>identity, memory, planning, reflection"] --> P6["Phase 6 — Context window<br/>token budget for long/resumed sessions"] --> P8["Phases 8–9 — Commands + permission modes + file tools"] --> P10["Phases 10–11 — Sub-agents, skills, compaction, tasks"]
 ```
 
 ## Module layout
@@ -65,14 +65,19 @@ agent-core/
     meta.py                # AGENT_NAME, agent_bio, inspect_self (Phase 5 identity)
     memory.py              # ~/.agent-core/memory/ JSON store, traversal guard, bounded recall
     planner.py             # make_plan / update_plan on AgentState.plan
-    reflection.py          # one-line lessons written to memory on terminal turns
+    reflection.py          # lessons + Phase 11 automatic memory extraction (extract_memories)
     commands.py            # Phase 8: shared slash-command table (CLI + web consume it)
+    subagent.py            # Phase 10: bounded one-level sub-agent (spawn_subagent)
+    tasks.py               # Phase 11: durable task backlog (create/update/list/render)
   tools/                   # real tool handlers
-    registry.json          # all tool definitions (echo, run_code, networked, doc-gen, cognitive, files)
+    registry.json          # all tool definitions (echo, run_code, networked, doc-gen, cognitive, files, autonomy)
     remote.py              # McpClient — stdlib JSON-RPC MCP tools/call transport (portable)
-    __init__.py            # register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools / register_files_tools
+    __init__.py            # register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools / register_files_tools / register_skills_tools / register_task_tools / register_subagent_tool
     cognitive.py           # state-aware handlers: inspect_self / remember / recall / make_plan / update_plan
     files.py               # Phase 9: read_file / write_file / edit_file / list_dir / glob / grep (rooted)
+    skills.py              # Phase 10: run_skill / list_skills (tool allowlist)
+    subagent.py            # Phase 10: the `agent` tool (transport-registered; needs a provider)
+    tasks.py               # Phase 11: task_create / task_update / task_list
     create_docx.py         # python-docx handler (Phase 2)
     create_pptx.py         # python-pptx handler (Phase 2)
     run_code.py            # Docker sandbox handler, watchdog timeout (Phase 3)
@@ -87,10 +92,13 @@ agent-core/
     style.css              # dark local-first theme (approval amber, tool gray)
     app.js                 # renders AgentState, tool cards, approval modal, session sidebar, slash commands
     commands.js            # Phase 8 JS port of core/commands.py (browser worker + Node tests)
-  web/context.js           # JS port of core/context.py (Phase 6)
-  web/engine.js            # in-browser loop, JS port of core/loop.py (+ plan/retry/lesson)
+  web/context.js           # JS port of core/context.py (Phase 6, incl. Phase 11 compaction)
+  web/engine.js            # in-browser loop, JS port of core/loop.py (+ plan/retry/lesson/allowlist)
   web/memory.js            # JS port of core/memory.py (localStorage/IndexedDB backend)
   web/planner.js           # JS port of core/planner.py
+  web/subagent.js          # Phase 10 JS port of core/subagent.py
+  web/skills.js            # Phase 10 JS port of tools/skills.py
+  web/tasks.js             # Phase 11 JS port of core/tasks.py
   web/worker.js            # module worker: Transformers.js + Pyodide + browser tools
   core/sessions.py         # shared session lifecycle: system prompt, save/load/list/delete
   android/                 # planned port — structure reserved
@@ -102,10 +110,13 @@ agent-core/
   test_files.py            # Phase 9 (tempfile root; approval + traversal)
   test_orchestrator.py     # Phase 4 (stubbed OpenAI client)
   test_web.py              # Web UI (fake provider + ephemeral server)
-  test_context.py          # Phase 6 (token budget invariants)
-  test_memory.py           # Phase 5 (memory persistence + traversal guard)
+  test_context.py          # Phase 6 (token budget invariants) + Phase 11 compaction
+  test_memory.py           # Phase 5 (memory persistence + traversal guard) + Phase 11 extraction
   test_planner.py          # Phase 5 (plan create/update/serialize)
   test_meta.py             # Phase 5 (bio block + inspect_self accuracy)
+  test_subagent.py         # Phase 10 (bounded sub-agents, approval bubbling, one-level)
+  test_skills.py           # Phase 10 (tool allowlist; gate still applies)
+  test_tasks.py            # Phase 11 (task backlog + session persistence)
   requirements.txt         # pydantic, jsonschema, python-docx, python-pptx, docker, openai
   docs/                    # this documentation set
   models/                  # GGUF weights (gitignored)
@@ -176,6 +187,14 @@ The agent gets a brain and a self. Everything is core-level, stdlib-only, and tr
 - **Reflection + retry-once:** `core/reflection.py` writes a one-line `kind=lesson` memory on terminal turns when a tool failed or the user rejected a call. `core/loop.py` implements retry-once: after a tool failure the loop allows exactly one more generate+execute cycle per user turn (`RETRY_ONCE_LIMIT = 1`, `retry_count` reset on each new user message), then gives up cleanly. A rejected call is never auto-retried — `resolve_approval(approved=False)` stays the only way through.
 
 State-aware tool handlers are marked with `takes_state` and invoked as `handler(state, arguments)`; `ToolRegistry.execute(call, state=None)` remains backward-compatible for plain handlers.
+
+## Autonomy (Phases 10–11)
+
+- **Sub-agents:** `core/subagent.spawn_subagent` runs a nested `core.loop.run` with an isolated message list and its own bounded turn budget (`MAX_SUBAGENT_TURNS = 4`). It is **one level deep, one at a time** (`MAX_CONCURRENT_SUBAGENTS = 1`; the child is seeded with the cap so a nested `agent` call is refused). A gated tool inside the child stops it and returns the pending call; the `agent` tool sets `parent_state.pending_approval` and `loop.step` breaks (remaining calls stay in `pending_calls`), so the human still resolves it and `run_code` is never auto-approved. The `agent` tool is transport-registered (`cli.py`, `web/server.py`) because it needs a provider.
+- **Skills:** `tools/skills.py` loads `skills/*.json` (`{name, description, prompt, tools?}`). `run_skill` injects the prompt and sets `AgentState.tool_allowlist`, enforced as a **denial** in `dispatch()` and cleared at the next user turn. It is a restriction, never a permission bypass — allowed calls still hit the gate. The browser mirrors this and fetches skills from `GET /api/skills`.
+- **Compaction:** `core/context.compact_to_budget` replaces whole dropped turns with one `"Summary of earlier conversation:"` system message via one extra generate; opt-in in `LlamaCppProvider` (`AGENT_CORE_COMPACT=1`). `trim_to_budget` still guarantees the live turn is kept and tool/assistant pairs never split.
+- **Memory extraction:** `core/reflection.extract_memories` proposes deduped `fact`/`preference` memories each terminal turn (heuristic, exception-safe, bounded) — extending Phase 5's lesson-only reflection.
+- **Tasks:** `core/tasks.py` + `AgentState.tasks` is a durable backlog distinct from `plan`, managed by `task_create`/`task_update`/`task_list` and `/tasks`, serialized with the session.
 
 ## Sandbox decisions (Phase 3)
 

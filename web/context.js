@@ -83,4 +83,50 @@ function trimToBudget(messages, budgetTokens) {
   return { kept, dropped };
 }
 
-export { estimateMessageTokens, estimateTokens, trimToBudget };
+/* Mirrors core/context.SUMMARY_PREFIX. */
+const SUMMARY_PREFIX = "Summary of earlier conversation:";
+
+/* Mirrors core/context.should_compact: true when trimToBudget drops a turn. */
+function shouldCompact(messages, budgetTokens) {
+  return trimToBudget(messages, budgetTokens).dropped.length > 0;
+}
+
+/* Phase 6b port of core/context.compact_to_budget.
+ *
+ * `summary` is a ready string (or a function dropped => string); the browser
+ * worker awaits its own extra generate first and passes the text, keeping this
+ * helper synchronous and Node-testable. Spliced in as one system message right
+ * after the system prefix; a tool/assistant pair is never split because
+ * trimToBudget only drops whole turns. Returns { kept, dropped, summary }.
+ */
+function compactToBudget(messages, budgetTokens, summary) {
+  const { kept, dropped } = trimToBudget(messages, budgetTokens);
+  if (!dropped.length) return { kept, dropped, summary: null };
+  let text = summary;
+  if (typeof summary === "function") {
+    try {
+      text = summary(dropped);
+    } catch (err) {
+      return { kept, dropped, summary: null };
+    }
+  }
+  if (!text) return { kept, dropped, summary: null };
+
+  let prefixEnd = 0;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i] && messages[i].role === "user") {
+      prefixEnd = i;
+      break;
+    }
+  }
+  const summaryMessage = {
+    role: "system",
+    content: `${SUMMARY_PREFIX}\n${text}`,
+  };
+  const compacted = kept
+    .slice(0, prefixEnd)
+    .concat([summaryMessage], kept.slice(prefixEnd));
+  return { kept: compacted, dropped, summary: text };
+}
+
+export { estimateMessageTokens, estimateTokens, trimToBudget, shouldCompact, compactToBudget, SUMMARY_PREFIX };

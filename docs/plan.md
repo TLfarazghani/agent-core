@@ -231,7 +231,7 @@ Not defined by the research doc — the three targets are Windows, Android, WebG
 
 Second-model gates (A, B) recorded in `docs/benchmarks.md`; Windows default decision made on measured data, not vibes.
 
-## Phases 8–12 — Claude Code architecture review (Phase 8–9 built; 10–12 planned)
+## Phases 8–12 — Claude Code architecture review (Phases 8–11 built; 12 planned)
 
 **Source:** an architectural review of the leaked Claude Code source (`codeaashu/claude-code`, leaked 2026-03-31). That repository archives **unlicensed, proprietary** Anthropic code, so Phases 8–12 borrow **patterns only, never source**. They are the subset of its architecture that fits a local, privacy-first LFM2.5 assistant; the rest is explicitly rejected (see the mapping table below). Everything stays stdlib-only and transport-agnostic with JS/Android parity, and the hardcoded approval gate (`core/tool_registry.py:18`, `:102`) is never weakened.
 
@@ -262,24 +262,24 @@ Second-model gates (A, B) recorded in `docs/benchmarks.md`; Windows default deci
 
 ## Phase 10 — Sub-agents & skills
 
-Claude Code spawns bounded sub-agents (`AgentTool` + `coordinator/`) and runs reusable workflows (`skills/` + `SkillTool`). Both map onto Agent Core's existing loop.
+**Status: built.** Claude Code spawns bounded sub-agents (`AgentTool` + `coordinator/`) and runs reusable workflows (`skills/` + `SkillTool`). Both map onto Agent Core's existing loop.
 
-- [ ] `core/subagent.py` — `spawn_subagent(state, goal, max_turns)` runs a **nested, bounded** `core.loop.run()` with an isolated message list and its own turn/context budget, returning one summary string. The approval gate and retry-once rules apply unchanged inside it; approvals bubble to the parent loop and are never auto-approved. Scope: one level deep, hard cap on concurrent sub-agents.
-- [ ] `agent` tool (`requires_approval: false`, state-aware) registered in `default_registry`; `inspect_self` reports active sub-agents.
-- [ ] `tools/skills.py` + `skills/` — a skill is a declarative `{name, description, prompt, tools?}` JSON; `run_skill(name, args)` injects the skill prompt and constrains the tool set (a **tool allowlist**, not a permission bypass — every gated call still hits `dispatch()`).
-- [ ] JS parity: `web/subagent.js` + skill loader; `test_webgpu_engine.mjs` coverage.
-- [ ] Tests: `test_subagent.py` (bounded turns, approval propagation, no infinite recursion), `test_skills.py` (allowlist enforced, unknown skill errors).
+- [x] `core/subagent.py` — `spawn_subagent(state, goal, provider, registry, max_turns=MAX_SUBAGENT_TURNS, memory_dir=None)` runs a **nested, bounded** `core.loop.run()` with an isolated message list and its own turn budget, returning a `SubagentResult(status, summary, turns, pending)`. The approval gate and retry-once rules apply unchanged inside it; a gated tool stops the child and the pending call bubbles to the parent (never auto-approved). `MAX_SUBAGENT_TURNS=4`, `MAX_CONCURRENT_SUBAGENTS=1`, one level deep (the child is seeded with the cap so a nested `agent` call is refused).
+- [x] `agent` tool (`requires_approval: false`, state-aware) — **transport-registered** (`cli.py`, `web/server.py`) because it needs a provider, not in `default_registry`; `inspect_self` reports `active_subagents`.
+- [x] `tools/skills.py` + `skills/` — a skill is a declarative `{name, description, prompt, tools?}` JSON; `run_skill(name)` injects the skill prompt and sets `AgentState.tool_allowlist`, enforced as a **denial** in `dispatch()` and cleared at the next user turn (a restriction, never a permission bypass — every gated call still hits the gate).
+- [x] JS parity: `web/subagent.js`, `web/skills.js`, `web/tasks.js`; engine allowlist denial; `test_webgpu_engine.mjs` coverage.
+- [x] Tests: `test_subagent.py` (bounded turns, approval propagation, one-level refusal), `test_skills.py` (allowlist enforced, unknown skill errors, gate still applies).
 
 **Gate:** a sub-agent completes a bounded task and returns its summary to the parent; a skill runs with its allowlist; neither can bypass the approval gate.
 
 ## Phase 11 — Context & memory automation
 
-Claude Code's `compact/` (summarization) and `extractMemories/` (automatic capture) complete Agent Core's Phase 5 (memory/reflection) and Phase 6 (budget).
+**Status: built.** Claude Code's `compact/` (summarization) and `extractMemories/` (automatic capture) complete Agent Core's Phase 5 (memory/reflection) and Phase 6 (budget).
 
-- [ ] **Phase 6b compaction (now scheduled):** when `core/context.trim_to_budget` would drop turns, summarize the dropped turns into one replacement system message via **one extra generate turn** — only if measurement (`docs/benchmarks.md`) shows base trimming loses too much. Never compacts the live approval turn or splits a tool/assistant pair.
-- [ ] **Automatic memory extraction:** an `extractMemories` analog — after a terminal turn, an extended `core/reflection.py` proposes durable facts/preferences into `core/memory.py` (`kind=fact|preference`), bounded and deduped by key, rather than only failure lessons.
-- [ ] **Tasks vs. plan:** add a lightweight `tasks` collection distinct from `AgentState.plan` (Claude Code separates `TaskCreateTool`/`TaskUpdateTool` from plan mode), persisted per session and surfaced in CLI + web.
-- [ ] Tests: `test_context.py` compaction cases (summary replaces dropped turns, tool pairs never split), memory-extraction dedupe, task persistence.
+- [x] **Phase 6b compaction:** `core/context.should_compact` + `compact_to_budget` — when `trim_to_budget` would drop turns, summarize them into one `"Summary of earlier conversation:"` system message (spliced after the system prefix) via **one extra generate turn**. Opt-in via `AGENT_CORE_COMPACT=1` / `LlamaCppProvider(compaction=True)`. Never compacts the live approval turn or splits a tool/assistant pair (whole turns only). JS port `web/context.js`.
+- [x] **Automatic memory extraction:** `core/reflection.extract_memories` — after a terminal turn, proposes durable facts/preferences into `core/memory.py` (`kind=fact|preference`), bounded and **deduped by key** (idempotent re-runs); heuristic by default, model-based when a provider is passed. Called from `finalize_turn`.
+- [x] **Tasks vs. plan:** `AgentState.tasks` + `core/tasks.py` (Claude Code separates `TaskCreateTool`/`TaskUpdateTool` from plan mode), persisted per session and surfaced via `task_create`/`task_update`/`task_list` and `/tasks` in CLI + web.
+- [x] Tests: `test_context.py` compaction cases (summary replaces dropped turns, tool pairs never split), memory-extraction dedupe in `test_memory.py`, `test_tasks.py` persistence, orchestrator compaction case.
 
 **Gate:** a long resumed session stays under budget via compaction (or is proven unnecessary by measurement); memory extraction writes deduped facts; tasks persist across resume.
 

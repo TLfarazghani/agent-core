@@ -14,6 +14,7 @@
 
 import { estimateTokens } from "./context.js";
 import { recallBounded } from "./memory.js";
+import { VALID_TASK_STATUSES, createTask, renderTasks, updateTask } from "./tasks.js";
 
 const AGENT_NAME = "Agent Core";
 const PERMISSION_MODES = ["default", "plan", "auto", "strict"];
@@ -78,6 +79,7 @@ const COMMANDS = {
             estimated_context_tokens: estimateTokens(state.messages),
             pending_approval: state.pending_approval,
             plan: state.plan,
+            tasks: state.tasks,
             permission_mode: state.permission_mode,
           },
           null,
@@ -132,6 +134,32 @@ const COMMANDS = {
       const text = recallBounded(topic, 1024);
       if (!text) return result(`No memories found${topic ? ` for '${topic}'` : ""}.`);
       return result(`Memories:\n${text}`);
+    },
+  },
+  "/tasks": {
+    name: "/tasks",
+    description: "list/add/update the task backlog",
+    usage: "/tasks [add <text>|task_N <status>]",
+    run: (state, arg) => {
+      const text = String(arg || "").trim();
+      if (!text) return result(renderTasks(state));
+      const parts = text.split(/\s+/);
+      if (parts.length >= 2 && parts[0].startsWith("task_") && VALID_TASK_STATUSES.includes(parts[1])) {
+        const extra = parts.slice(2).join(" ") || null;
+        try {
+          updateTask(state, parts[0], parts[1], extra);
+        } catch (err) {
+          return errorResult(err && err.message ? err.message : String(err));
+        }
+        return result(renderTasks(state), { state });
+      }
+      const description = parts[0].toLowerCase() === "add" && parts.length > 1 ? parts.slice(1).join(" ") : text;
+      try {
+        const task = createTask(state, description);
+        return result(`Added ${task.id}: ${task.description}`, { state });
+      } catch (err) {
+        return errorResult(err && err.message ? err.message : String(err));
+      }
     },
   },
   "/turns": {
