@@ -538,6 +538,104 @@ def _get_json(url: str) -> Any:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def test_session_permission_mode() -> None:
+    """Phase 8: permission_mode is a per-session setting, preserved by clear,
+    switchable through /api/command, and rejected when invalid."""
+    server = _TestServer()
+    try:
+        def post(path: str, body: dict) -> dict:
+            def do():
+                request = urllib.request.Request(
+                    server.url(path),
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            return _retry_transport(do)
+
+        created = post("/api/sessions", {"permission_mode": "plan"})
+        session_id = created["session_id"]
+        assert server.get(f"/api/sessions/{session_id}")["state"]["permission_mode"] == "plan"
+
+        cleared = post(f"/api/sessions/{session_id}/clear", {})
+        assert cleared["state"]["permission_mode"] == "plan"
+
+        switched = post(f"/api/sessions/{session_id}/command", {"command": "/mode strict"})
+        assert switched["error"] is False
+        assert switched["state"]["permission_mode"] == "strict"
+
+        try:
+            post("/api/sessions", {"permission_mode": "yolo"})
+            assert False, "expected 400 for invalid permission_mode"
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+    finally:
+        server.stop()
+
+
+def test_command_endpoint_runs_shared_registry() -> None:
+    """The web server consumes the same core/commands.py table as the CLI."""
+    server = _TestServer()
+    try:
+        session_id = _create_session(server)
+
+        def command(text: str) -> dict:
+            def do():
+                request = urllib.request.Request(
+                    server.url(f"/api/sessions/{session_id}/command"),
+                    data=json.dumps({"command": text}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(request, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+
+            return _retry_transport(do)
+
+        help_result = command("/help")
+        assert help_result["error"] is False
+        assert "/mode" in help_result["text"]
+
+        turns = command("/turns 5")
+        assert turns["state"]["max_turns"] == 5
+
+        tools = command("/tools")
+        assert "risky" in tools["text"]
+        assert "approval" in tools["text"]
+
+        unknown = command("/nope")
+        assert unknown["error"] is True
+
+        empty = None
+        try:
+            request = urllib.request.Request(
+                server.url(f"/api/sessions/{session_id}/command"),
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(request, timeout=10)
+        except urllib.error.HTTPError as exc:
+            empty = exc.code
+        assert empty == 400
+    finally:
+        server.stop()
+
+
+def test_commands_listed() -> None:
+    server = _TestServer()
+    try:
+        payload = server.get("/api/commands")
+        names = {entry["name"] for entry in payload["commands"]}
+        assert {"/help", "/mode", "/tools", "/approve", "/reject"} <= names
+        assert "/help" in payload["help"]
+    finally:
+        server.stop()
+
+
 def test_api_search_proxy_returns_results() -> None:
     registry = ToolRegistry()
     from tools import register_web_tools
@@ -612,6 +710,68 @@ def test_api_fetch_proxy_strips_html() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_api_file_proxy_reads_and_gates_writes() -> None:
+    """Phase 9: read-only file ops proxy through /api/file; writes need
+    approved=true (the browser engine only sends it after its own gate)."""
+    import tempfile
+    from pathlib import Path
+
+    from tools import register_files_tools
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "note.txt").write_text("hello file\n", encoding="utf-8")
+        registry = ToolRegistry()
+        register_files_tools(registry, root=root)
+        server, thread = _start_web_server(registry)
+
+        def post(body: dict) -> dict:
+            def do() -> dict:
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{server.port}/api/file",
+                    data=json.dumps(body).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=10) as resp:
+                        return json.loads(resp.read().decode("utf-8"))
+                except urllib.error.HTTPError as exc:
+                    return json.loads(exc.read().decode("utf-8"))
+
+            return _retry_transport(do)
+
+        try:
+            read = post({"tool": "read_file", "arguments": {"path": "note.txt"}})
+            assert "hello file" in read["result"]
+
+            forbidden = post(
+                {
+                    "tool": "write_file",
+                    "arguments": {"path": "new.txt", "content": "x"},
+                }
+            )
+            assert "approval required" in forbidden["error"]
+            assert not (root / "new.txt").exists()
+
+            written = post(
+                {
+                    "tool": "write_file",
+                    "arguments": {"path": "new.txt", "content": "x"},
+                    "approved": True,
+                }
+            )
+            assert written["result"].startswith("wrote")
+            assert (root / "new.txt").read_text(encoding="utf-8") == "x"
+
+            bad = post({"tool": "run_code", "arguments": {}})
+            assert "unsupported file tool" in bad["error"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":

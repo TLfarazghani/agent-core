@@ -12,10 +12,27 @@ from typing import Any, Callable
 
 import jsonschema
 
-from .state import AgentState, ChatMessage, PendingApproval, ToolCall, ToolDefinition
+from .state import (
+    AgentState,
+    ChatMessage,
+    PendingApproval,
+    PermissionMode,
+    ToolCall,
+    ToolDefinition,
+)
 
-# Tools that always require human approval regardless of their definition.
+# Tools that always require human approval regardless of their definition or
+# the session's permission mode. Phase 8: ``auto`` mode may auto-approve other
+# gated tools, but NEVER these.
 HARDCODED_APPROVAL_TOOLS = frozenset({"run_code"})
+
+# Phase 8 permission modes, enforced in ``dispatch()`` only:
+#   default — park approval-gated tools, run the rest
+#   plan    — park anything that is not ``read_only`` (propose, don't mutate)
+#   auto    — auto-approve gated tools except HARDCODED_APPROVAL_TOOLS
+#   strict  — park every tool call, read-only included
+# ``run_code`` never bypasses ``resolve_approval(approved=True)`` in any mode.
+APPROVAL_MODES: tuple[PermissionMode, ...] = ("default", "plan", "auto", "strict")
 
 _SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 
@@ -88,8 +105,27 @@ class ToolRegistry:
     def definitions(self) -> list[ToolDefinition]:
         return list(self._definitions.values())
 
-    def _requires_approval(self, definition: ToolDefinition) -> bool:
-        return definition.name in HARDCODED_APPROVAL_TOOLS or definition.requires_approval
+    def _requires_approval(self, definition: ToolDefinition, state: AgentState | None = None) -> bool:
+        """Decide whether ``definition`` must be parked for human approval.
+
+        The hardcoded set always wins. Beyond that the session's Phase 8
+        permission mode decides; ``state=None`` keeps the pre-Phase-8 behavior
+        (definition flag only) so plain callers/tests are unaffected.
+        """
+        if definition.name in HARDCODED_APPROVAL_TOOLS:
+            return True
+        mode: PermissionMode = (
+            getattr(state, "permission_mode", "default") if state is not None else "default"
+        )
+        if mode == "strict":
+            return True
+        if mode == "plan":
+            # Plan mode is read-only: anything not explicitly marked read-only
+            # is parked for the human, even if its definition says otherwise.
+            return not getattr(definition, "read_only", False)
+        if mode == "auto":
+            return False
+        return definition.requires_approval
 
     def _validate_call(self, call: ToolCall, definition: ToolDefinition) -> str | None:
         """Return an error string if ``call.arguments`` fail the schema."""
@@ -118,7 +154,7 @@ class ToolRegistry:
         invalid = self._validate_call(call, definition)
         if invalid is not None:
             return ChatMessage(role="tool", tool_call_id=call.id, content=invalid)
-        if self._requires_approval(definition):
+        if self._requires_approval(definition, state):
             state.pending_approval = PendingApproval(
                 call_id=call.id, tool_name=call.name, arguments=call.arguments
             )

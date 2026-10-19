@@ -12,7 +12,7 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 
 ## Status
 
-**Completed (gates passed):** phases 0, 1, 1b, 2, 3, 5, 6, 7 — Windows path. Phase 4 shipped on Windows; its Android port and in-browser WebGPU model are still pending, and Phase 6b compaction is not built. **Remaining:** phases 8–12 — planned, no code yet.
+**Completed (gates passed):** phases 0, 1, 1b, 2, 3, 5, 6, 7, **8** — Windows path. Phase 4 shipped on Windows; its Android port and in-browser WebGPU model are still pending, and Phase 6b compaction is not built. **Remaining:** phases 9–12 — planned, no code yet.
 
 | Phase | Deliverable | Status |
 |---|---|---|
@@ -25,15 +25,15 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 | 5 | **Agent Core brain/self** — identity, cross-session memory, planning, reflection | **DONE** — `core/meta.py`, `core/memory.py`, `core/planner.py`, `core/reflection.py` + `tools/cognitive.py`; retry-once in the loop; JS parity (`web/memory.js`, `web/planner.js`) |
 | 6 | Context window — token budget so long/resumed sessions never exceed the model's window | **DONE** — `core/context.py` + `web/context.js`, wired into orchestrator + browser engine |
 | 7 | Second model — selectable 2.6B dense + 8B-A1B MoE | **Gate B PASSED 2026-08-19** — model selectable via `AGENT_CORE_MODEL` (env / `server_config.ps1 -Model` / `Core-agent.bat`); client sampling auto-mirrors each model's table; 2.6B benchmarked (80%, ~110 tok/s) and 8B-A1B benchmarked (80%, ~150 tok/s, full 128K ctx in 8GB VRAM) → both **opt-in**, 1.2B stays default (83%, ~215 tok/s); `benchmark_tool_accuracy.py` |
-| 8 | Command & control surface — shared slash-command registry + permission modes | **PLANNED** — see `docs/plan.md` |
-| 9 | File & code-intelligence tools — read/write/edit/glob/grep, write/edit approval-gated | **PLANNED** |
+| 8 | Command & control surface — shared slash-command registry + permission modes | **DONE** — `core/commands.py` shared by CLI + web; `AgentState.permission_mode` (`default/plan/auto/strict`) enforced in `dispatch()`; JS parity `web/commands.js` + `web/engine.js`; mode selector + `/api/command` in the web UI |
+| 9 | File & code-intelligence tools — read/write/edit/glob/grep, write/edit approval-gated | **DONE** — `tools/files.py` rooted at `AGENT_CORE_FILE_ROOT`; browser mirrors via `POST /api/file` |
 | 10 | Sub-agents (bounded) & skills (tool-allowlisted) | **PLANNED** |
 | 11 | Context compaction + automatic memory extraction + tasks | **PLANNED** |
 | 12 | Observability — per-session cost/context + `doctor` self-diagnostics | **PLANNED** |
 
 Phases 8–12 are an architectural review of the leaked Claude Code source (`codeaashu/claude-code`) — **patterns only, no source copied**; see `docs/plan.md`.
 
-Test suites (verified 2026-10-16): **156 pass** — **135** via `.venv\Scripts\python -m pytest`; **17** engine+context parity via `node test_webgpu_engine.mjs`; **4** parser parity via `.venv\Scripts\python test_parser_js.py`. Previously verified live on llama-server (Phase 4 gate, ~215 tok/s 1.2B; 2.6B ~110 tok/s; 8B-A1B ~150 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
+Test suites (verified 2026-10-19): **214 pass** — **181** via `.venv\Scripts\python -m pytest`; **29** engine+context+Phase-8/9 parity via `node test_webgpu_engine.mjs`; **4** parser parity via `.venv\Scripts\python test_parser_js.py`. Previously verified live on llama-server (Phase 4 gate, ~215 tok/s 1.2B; 2.6B ~110 tok/s; 8B-A1B ~150 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
 
 Build order is forced by dependency: Phase 3 (code execution) dispatches through the same loop Phase 0 builds.
 

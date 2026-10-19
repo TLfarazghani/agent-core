@@ -43,6 +43,11 @@
       "default": 0,
       "description": "Consecutive tool failures in the current user turn; retry-once stops the loop past the limit."
     },
+    "permission_mode": {
+      "enum": ["default", "plan", "auto", "strict"],
+      "default": "default",
+      "description": "Phase 8 permission mode, enforced inside tool_registry.dispatch(). run_code is never bypassable in any mode."
+    },
     "plan": {
       "type": ["object", "null"],
       "default": null,

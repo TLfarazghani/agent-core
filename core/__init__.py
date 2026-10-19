@@ -1,6 +1,17 @@
 """agent-core: transport-agnostic local LFM2.5 agent core."""
 
 from .context import estimate_message_tokens, estimate_tokens, trim_to_budget
+from .commands import (
+    COMMANDS,
+    Command,
+    CommandContext,
+    CommandResult,
+    command_names,
+    help_text,
+    is_command,
+    parse_command,
+    run_command,
+)
 from .loop import (
     RETRY_ONCE_LIMIT,
     GenerateProvider,
@@ -36,27 +47,39 @@ from .planner import make_plan as planner_make_plan
 from .planner import update_plan as planner_update_plan
 from .reflection import lesson_from_state, maybe_emit_lesson
 from .state import (
+    DEFAULT_PERMISSION_MODE,
+    PERMISSION_MODES,
     AgentState,
     ChatMessage,
     PendingApproval,
+    PermissionMode,
     Plan,
     PlanStep,
     ToolCall,
     ToolDefinition,
 )
-from .tool_registry import ToolRegistry, takes_state
+from .tool_registry import APPROVAL_MODES, HARDCODED_APPROVAL_TOOLS, ToolRegistry, takes_state
 
 __all__ = [
     "AGENT_NAME",
+    "APPROVAL_MODES",
     "AgentState",
+    "COMMANDS",
     "ChatMessage",
+    "Command",
+    "CommandContext",
+    "CommandResult",
+    "DEFAULT_PERMISSION_MODE",
     "GenerateProvider",
+    "HARDCODED_APPROVAL_TOOLS",
     "KINDS",
     "MaxTurnsError",
     "MEMORY_DIR",
+    "PERMISSION_MODES",
     "ParserError",
     "PendingApproval",
     "PendingApprovalError",
+    "PermissionMode",
     "Plan",
     "PlanStep",
     "RETRY_ONCE_LIMIT",
@@ -64,19 +87,23 @@ __all__ = [
     "ToolDefinition",
     "ToolRegistry",
     "agent_bio",
+    "command_names",
     "current_time",
     "estimate_message_tokens",
     "estimate_tokens",
     "extract_blocks",
     "finalize_turn",
     "has_tool_call_blocks",
+    "help_text",
     "inspect_self",
+    "is_command",
     "lesson_from_state",
     "list_memories",
     "load_memory",
     "maybe_emit_lesson",
     "memory_path",
     "new_state",
+    "parse_command",
     "parse_tool_calls",
     "parse_tool_calls_strict",
     "planner_make_plan",
@@ -85,6 +112,7 @@ __all__ = [
     "recall_memories",
     "resolve_approval",
     "run",
+    "run_command",
     "save_memory",
     "should_stop_after_retries",
     "step",

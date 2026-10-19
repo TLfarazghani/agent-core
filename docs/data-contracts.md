@@ -13,6 +13,7 @@ Source: `schemas/tool_definition.schema.json`. Goes in the system prompt or `too
   "name": "get_object_info",
   "description": "...",
   "requires_approval": false,
+  "read_only": true,
   "parameters": { "type": "object", "properties": { "...": "..." }, "required": [] }
 }
 ```
@@ -22,6 +23,7 @@ Source: `schemas/tool_definition.schema.json`. Goes in the system prompt or `too
 | `name` | string | required; unique within a registry |
 | `description` | string | required; how the model decides to call it |
 | `requires_approval` | boolean | required; default `false`. `run_code` is **always** `true`, hardcoded in `tool_registry.dispatch()`, never model-decided |
+| `read_only` | boolean | default `false` (Phase 8); marks a non-mutating tool. `plan` permission mode runs only `read_only` tools, and `strict` parks everything |
 | `parameters` | JSON Schema object | required; `type: "object"` |
 
 ## ToolCall
@@ -73,6 +75,7 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "pending_approval": null,
   "pending_calls": [],
   "retry_count": 0,
+  "permission_mode": "default",
   "plan": null
 }
 ```
@@ -88,9 +91,21 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 | `pending_approval` | object \| null | `{ "call_id", "tool_name", "arguments" }`; non-null exactly when a `requires_approval` call is waiting on a human |
 | `pending_calls` | array of ToolCall | remaining tool calls of the current turn parked behind `pending_approval`; resumed in order by `resolve_approval()` |
 | `retry_count` | int | consecutive tool failures in the current user turn (reset on each new user message); retry-once stops the loop past `RETRY_ONCE_LIMIT` (1) |
+| `permission_mode` | enum | `default`, `plan`, `auto`, `strict` (Phase 8); enforced inside `tool_registry.dispatch()`, never model-decided. Set via `POST /api/sessions {"permission_mode": ...}`, the web mode selector, or `/mode [mode]` in the CLI and web UI. Serialized with the session so it survives resume |
 | `plan` | object \| null | `{ "goal", "steps": [{ "id", "description", "status": "pending\|in_progress\|done\|failed\|skipped", "result" }] }`; explicit multi-step task tracking (Phase 5) |
 
 `pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention. `pending_calls` exists so multi-call turns like `[run_code, echo]` don't silently drop the calls after the approval-gated one. Plan steps are bookkeeping only — every step that calls a tool still hits the hardcoded approval gate independently; there is **no plan-based approval bypass**.
+
+### Permission modes (Phase 8)
+
+| Mode | Behavior |
+|---|---|
+| `default` | Park a tool when `requires_approval` is true; run everything else (pre-Phase-8 behavior) |
+| `plan` | Run only `read_only` tools; park every other call (propose, don't mutate) |
+| `auto` | Auto-approve `requires_approval` tools; `HARDCODED_APPROVAL_TOOLS` (`run_code`) is still parked |
+| `strict` | Park **every** tool call, read-only included |
+
+The mode is read in `ToolRegistry._requires_approval(definition, state)`. The hardcoded `run_code` check runs first, so no mode can bypass it — only `resolve_approval(approved=True)` executes a parked `run_code` call. `dispatch()` is the sole enforcement point; the browser mirror is `requiresApproval()` in `web/engine.js`.
 
 ## Tool contracts by category
 
@@ -107,7 +122,7 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 }
 ```
 
-`web_search` backends: `web` → DuckDuckGo HTML, `news` → Google News RSS, `wikipedia` → Wikipedia Search API. In the browser, both tools proxy through `web/server.py` (`/api/search`, `/api/fetch`) to avoid CORS; neither requires approval (read-only).
+`web_search` backends: `web` → DuckDuckGo HTML, `news` → Google News RSS, `wikipedia` → Wikipedia Search API. In the browser, both tools proxy through `web/server.py` (`/api/search`, `/api/fetch`) to avoid CORS; neither requires approval and both are `read_only: true`.
 
 **Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue), opt-in via `MCP_BASE_URL`:**
 
@@ -138,7 +153,7 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 }
 ```
 
-**Cognitive (Phase 5) — identity, memory, planning. All `requires_approval: false`; handlers are state-aware (`takes_state`), invoked as `handler(state, arguments)`. Stored memory lives at `~/.agent-core/memory/` (same traversal guard as sessions):**
+**Cognitive (Phase 5) — identity, memory, planning. All `requires_approval: false`; `inspect_self`, `recall`, `make_plan` and `update_plan` are `read_only: true` (only `remember` writes, so `plan` mode parks it). Handlers are state-aware (`takes_state`), invoked as `handler(state, arguments)`. Stored memory lives at `~/.agent-core/memory/` (same traversal guard as sessions):**
 
 ```json
 { "name": "inspect_self", "parameters": {} }
@@ -149,6 +164,17 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 ```
 
 Memory entry record: `{ "key", "content", "kind", "created_at", "source_session" }` — one JSON file per key. `new_agent_state()` seeds each session with a bounded recall (`~512` tokens, newest first) so knowledge survives CLI ↔ web resumes. `make_plan`/`update_plan` never bypass the approval gate: each plan step that calls a tool still hits the hardcoded gate in `dispatch()`.
+
+**File & code intelligence (Phase 9) — rooted at `AGENT_CORE_FILE_ROOT` (default: repo root). Reads are `requires_approval: false` + `read_only: true`; writes are `requires_approval: true`:**
+```json
+{ "name": "read_file", "parameters": { "path": "string", "max_chars": "integer?" } }
+{ "name": "write_file", "parameters": { "path": "string", "content": "string" }, "requires_approval": true }
+{ "name": "edit_file", "parameters": { "path": "string", "old_string": "string", "new_string": "string" }, "requires_approval": true }
+{ "name": "list_dir", "parameters": { "path": "string?" } }
+{ "name": "glob", "parameters": { "pattern": "string", "root": "string?" } }
+{ "name": "grep", "parameters": { "pattern": "string", "path": "string?", "max_results": "integer?" } }
+```
+`resolve_path()` resolves the target (symlinks included) and rejects anything that escapes the root; `edit_file` replaces exactly one occurrence and fails when `old_string` is absent or non-unique; all writes are atomic (temp file + `os.replace`). In the browser, `BROWSER_TOOLS` proxies these through `POST /api/file` (loopback/CSRF-guarded); `write_file`/`edit_file` are refused unless the body carries `approved: true`, which the worker only sends after the browser engine's own gate.
 
 ## Enforcement
 

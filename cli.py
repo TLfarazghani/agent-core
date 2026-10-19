@@ -14,14 +14,16 @@ import urllib.request
 from core import (
     AgentState,
     ChatMessage,
+    CommandContext,
     agent_bio,
     finalize_turn,
     resolve_approval,
+    run_command,
     should_stop_after_retries,
     user_message,
 )
 from core.loop import MaxTurnsError
-from core.sessions import SESSION_DIR, load_session, new_agent_state, refresh_agent_bio, save_session
+from core.sessions import SESSION_DIR, new_agent_state, save_session
 from core.tool_registry import ToolRegistry
 
 from windows.orchestrator import DEFAULT_BASE_URL, LlamaCppProvider, default_registry
@@ -166,13 +168,6 @@ def print_header(state: AgentState) -> None:
     print(_bold(rule))
 
 
-def print_tools(registry: ToolRegistry) -> None:
-    print(_bold("Registered tools:"))
-    for definition in registry.definitions():
-        print(f"  {definition.name:<16} {definition.description}")
-    print(_dim("  (web_search / send_email / send_message need MCP_BASE_URL set)"))
-
-
 def render_plan(state: AgentState) -> None:
     plan = state.plan
     if plan is None:
@@ -224,54 +219,34 @@ def main() -> int:
         if not line:
             continue
         if line.startswith("/"):
-            command, _, arg = line.partition(" ")
-            arg = arg.strip()
-            if command == "/quit":
-                break
-            elif command == "/new":
-                state = new_agent(registry)
+            command, _ = line.split(" ", 1) if " " in line else (line, "")
+            result = run_command(
+                CommandContext(
+                    state=state,
+                    registry=registry,
+                    max_context_tokens=provider.max_context_tokens,
+                    session_dir=SESSION_DIR,
+                ),
+                line,
+            )
+            if result.state is not None:
+                state = result.state
+            if result.clear:
                 rendered = 0
+            if result.text:
+                print(result.text)
+            if result.save:
+                save_session(state)
+            if result.quit:
+                break
+            if result.state is not None:
                 print_header(state)
-            elif command == "/turns":
-                try:
-                    value = max(1, int(arg))
-                except ValueError:
-                    print(_red("Usage: /turns <n>  (positive integer)"))
-                    continue
-                state.max_turns = value
-                print_header(state)
-                print(_dim(f"  turn budget for this session set to {value}"))
-            elif command == "/resume":
-                try:
-                    state = load_session(arg)
-                    refresh_agent_bio(state, registry)
-                    rendered = 0
-                    print_header(state)
-                except (FileNotFoundError, ValueError, json.JSONDecodeError):
-                    print(_red(f"No session '{arg}' found."))
-            elif command == "/tools":
-                print_tools(registry)
-            elif command == "/approve":
-                if state.pending_approval is None:
-                    print(_dim("No pending approval."))
-                else:
-                    resolve_approval(state, registry, approved=True)
-                    render_plain_message(state.messages[-1])
-            elif command == "/reject":
-                if state.pending_approval is None:
-                    print(_dim("No pending approval."))
-                else:
-                    resolve_approval(state, registry, approved=False)
-                    print(_dim("  ⟦ rejected: tool did not run ⟧"))
-            elif command == "/help":
-                print(
-                    "  /new <id>   new session   /resume <id>  load session\n"
-                    "  /turns <n>  set this session's turn budget (default: env AGENT_CORE_MAX_TURNS / 8)\n"
-                    "  /tools      list tools    /approve|/reject  resolve approval\n"
-                    "  /quit       save + exit"
-                )
-            else:
-                print(_dim(f"Unknown command: {command}"))
+            if command in ("/approve", "/reject") and result.text.startswith(
+                ("Approved", "Rejected")
+            ):
+                rendered = len(state.messages)
+                rendered = run_turn(state, provider, registry, rendered)
+                render_plan(state)
             continue
 
         if interrupted:

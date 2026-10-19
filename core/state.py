@@ -8,6 +8,15 @@ from pydantic import BaseModel, ConfigDict, Field
 Role = Literal["user", "assistant", "tool", "system"]
 Target = Literal["windows", "android", "webgpu"]
 StepStatus = Literal["pending", "in_progress", "done", "failed", "skipped"]
+PermissionMode = Literal["default", "plan", "auto", "strict"]
+
+# Phase 8: permission modes. ``default`` asks for every approval-gated tool;
+# ``plan`` allows only read-only tools (everything gated is parked for the
+# human); ``auto`` auto-approves non-``run_code`` gated tools; ``strict`` asks
+# even for tools that do not declare approval. ``run_code`` is never bypassable
+# in any mode -- the hardcoded gate in ``tool_registry.dispatch()`` wins.
+DEFAULT_PERMISSION_MODE: PermissionMode = "default"
+PERMISSION_MODES: tuple[PermissionMode, ...] = ("default", "plan", "auto", "strict")
 
 
 class ToolCall(BaseModel):
@@ -41,6 +50,7 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     requires_approval: bool = False
+    read_only: bool = False
     parameters: dict[str, Any]
 
 
@@ -73,3 +83,4 @@ class AgentState(BaseModel):
     pending_calls: list[ToolCall] = Field(default_factory=list)
     retry_count: int = 0
     plan: Optional[Plan] = None
+    permission_mode: PermissionMode = DEFAULT_PERMISSION_MODE

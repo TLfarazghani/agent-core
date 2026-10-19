@@ -3,6 +3,7 @@
     "name": "echo",
     "description": "Return the given text verbatim.",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {
@@ -29,6 +30,7 @@
     "name": "web_search",
     "description": "Search the web and return top results. kind='web' for general web search, kind='news' for latest headlines, kind='wikipedia' for encyclopedia entries. Does not require approval.",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {
@@ -43,6 +45,7 @@
     "name": "fetch_url",
     "description": "Fetch a URL and return its text content as trimmed plain text. Use when a search snippet is not enough and you need the actual page content. Does not require approval.",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {
@@ -175,6 +178,7 @@
     "name": "inspect_self",
     "description": "Return a live snapshot of the agent: name, session id, target, model, turn budget, estimated context usage, pending approval, current plan, and available tools. Does not require approval.",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {},
@@ -199,6 +203,7 @@
     "name": "recall",
     "description": "Search long-term memory for entries matching a topic. Empty topic recalls the most recent memories.",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {
@@ -212,6 +217,7 @@
     "name": "make_plan",
     "description": "Set an explicit multi-step plan for the current task (goal + ordered step descriptions). Each step that calls a tool still requires normal approval. Does not require approval itself.",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {
@@ -229,6 +235,7 @@
     "name": "update_plan",
     "description": "Mark a plan step as in_progress, done, failed, or skipped (optionally with a short result).",
     "requires_approval": false,
+    "read_only": true,
     "parameters": {
       "type": "object",
       "properties": {
@@ -237,6 +244,89 @@
         "result": { "type": "string" }
       },
       "required": ["step_id", "status"]
+    }
+  },
+  {
+    "name": "read_file",
+    "description": "Read a UTF-8 text file under the allowed file root (AGENT_CORE_FILE_ROOT). Returns content, truncated to max_chars. Read-only.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "max_chars": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["path"]
+    }
+  },
+  {
+    "name": "write_file",
+    "description": "Create or overwrite a text file under the allowed file root. Atomic write; always requires human approval.",
+    "requires_approval": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "content": { "type": "string" }
+      },
+      "required": ["path", "content"]
+    }
+  },
+  {
+    "name": "edit_file",
+    "description": "Replace one unique occurrence of old_string with new_string in a file under the allowed file root. Fails if old_string is absent or occurs more than once. Atomic write; always requires human approval.",
+    "requires_approval": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "old_string": { "type": "string", "minLength": 1 },
+        "new_string": { "type": "string" }
+      },
+      "required": ["path", "old_string", "new_string"]
+    }
+  },
+  {
+    "name": "list_dir",
+    "description": "List entries of a directory under the allowed file root (directories end with '/'). Read-only.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" }
+      },
+      "required": []
+    }
+  },
+  {
+    "name": "glob",
+    "description": "Find paths under the allowed file root matching a glob pattern (e.g. 'core/*.py', '**/*.md'). Read-only.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1 },
+        "root": { "type": "string" }
+      },
+      "required": ["pattern"]
+    }
+  },
+  {
+    "name": "grep",
+    "description": "Search file contents for a regular expression under the allowed file root. Returns 'path:line: text'. Read-only.",
+    "requires_approval": false,
+    "read_only": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string", "minLength": 1 },
+        "path": { "type": "string" },
+        "max_results": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["pattern"]
     }
   }
 ]

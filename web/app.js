@@ -25,6 +25,7 @@ const els = {
   deleteAllSessions: $("delete-all-sessions"),
   turnCounter: $("turn-counter"),
   maxTurnsInput: $("max-turns-input"),
+  permissionMode: $("permission-mode"),
   modal: $("approval-modal"),
   approvalTool: $("approval-tool"),
   approvalArgs: $("approval-args"),
@@ -171,6 +172,7 @@ function startLiveBubble() {
 function updateTurnCounter() {
   const s = state.agentState;
   els.turnCounter.textContent = s ? `turn ${s.turn_count}/${s.max_turns}` : "";
+  if (s && s.permission_mode) els.permissionMode.value = s.permission_mode;
 }
 
 /* ---------- UI state ---------- */
@@ -230,6 +232,10 @@ async function handleEvent(event, data) {
       if (state.liveBubble) { state.liveBubble.classList.remove("live"); state.liveBubble = null; }
       appendElement("div", "msg error", data.message);
       setBusy(false);
+      break;
+    case "command_result":
+      if (data.state) renderMessages(data.state);
+      appendElement("div", data.error ? "msg error" : "msg system", data.text);
       break;
     case "done":
       if (state.liveBubble) { state.liveBubble.classList.remove("live"); state.liveBubble = null; }
@@ -319,6 +325,7 @@ async function selectSession(id) {
     state.sessionId = id;
     renderMessages(agentState);
     els.maxTurnsInput.value = agentState.max_turns;
+    els.permissionMode.value = agentState.permission_mode || "default";
     refreshSessions();
   } catch (err) {
     appendElement("div", "msg error", "could not load session: " + err.message);
@@ -333,19 +340,25 @@ function sessionTurnBudget() {
   return value;
 }
 
+function sessionPermissionMode() {
+  return els.permissionMode.value || "default";
+}
+
 async function createSession() {
   hideApproval();
   const maxTurns = sessionTurnBudget();
   if (state.transport === "browser") {
     if (!browserWorker) startBrowserWorker();
-    browserWorker.postMessage({ type: "reset", max_turns: maxTurns });
+    browserWorker.postMessage({ type: "reset", max_turns: maxTurns, permission_mode: sessionPermissionMode() });
     return;
   }
   try {
+    const body = { permission_mode: sessionPermissionMode() };
+    if (maxTurns !== null) body.max_turns = maxTurns;
     const { session_id } = await fetchJSON("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(maxTurns === null ? {} : { max_turns: maxTurns }),
+      body: JSON.stringify(body),
     });
     state.sessionId = session_id;
     els.messages.innerHTML = "";
@@ -362,7 +375,7 @@ async function clearSession() {
   if (!confirm("Clear the chat history of this session?")) return;
   const maxTurns = sessionTurnBudget();
   if (state.transport === "browser") {
-    browserWorker.postMessage({ type: "reset", max_turns: maxTurns });
+    browserWorker.postMessage({ type: "reset", max_turns: maxTurns, permission_mode: sessionPermissionMode() });
     return;
   }
   if (!state.sessionId) return;
@@ -411,10 +424,45 @@ async function deleteAllSessions() {
   }
 }
 
+async function runSlashCommand(text) {
+  els.input.value = "";
+  const name = text.trim().split(/\s+/, 1)[0];
+  if ((name === "/approve" || name === "/reject") && state.pendingApproval) {
+    await approveAction(name === "/approve");
+    return;
+  }
+  if (state.transport === "browser") {
+    if (!browserWorker) startBrowserWorker();
+    browserWorker.postMessage({ type: "command", command: text });
+    return;
+  }
+  if (!state.sessionId) {
+    appendElement("div", "msg error", "no active session");
+    return;
+  }
+  try {
+    const result = await fetchJSON(`/api/sessions/${state.sessionId}/command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ command: text }),
+    });
+    if (result.session_id) state.sessionId = result.session_id;
+    if (result.state) renderMessages(result.state);
+    appendElement("div", result.error ? "msg error" : "msg system", result.text);
+    refreshSessions();
+  } catch (err) {
+    appendElement("div", "msg error", err.message);
+  }
+}
+
 async function sendMessage() {
   if (state.streaming || state.pendingApproval) return;
   const text = els.input.value.trim();
   if (!text) return;
+  if (text.startsWith("/")) {
+    await runSlashCommand(text);
+    return;
+  }
   if (state.transport === "browser") {
     els.input.value = "";
     appendElement("div", "msg user", text);
@@ -477,6 +525,16 @@ els.deleteSession.addEventListener("click", deleteCurrentSession);
 els.deleteAllSessions.addEventListener("click", deleteAllSessions);
 els.approve.addEventListener("click", () => approveAction(true));
 els.reject.addEventListener("click", () => approveAction(false));
+els.permissionMode.addEventListener("change", () => {
+  const mode = sessionPermissionMode();
+  if (state.transport === "browser") {
+    if (!browserWorker) startBrowserWorker();
+    browserWorker.postMessage({ type: "mode", permission_mode: mode });
+    return;
+  }
+  if (!state.sessionId) return;
+  runSlashCommand(`/mode ${mode}`);
+});
 els.transportServer.addEventListener("click", () => setTransport("server"));
 els.transportBrowser.addEventListener("click", () => setTransport("browser"));
 document.addEventListener("keydown", (e) => {

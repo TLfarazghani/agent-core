@@ -9,6 +9,11 @@
     "name": { "type": "string" },
     "description": { "type": "string" },
     "requires_approval": { "type": "boolean", "default": false },
+    "read_only": {
+      "type": "boolean",
+      "default": false,
+      "description": "Phase 8: a non-mutating tool. plan permission mode runs only read_only tools; strict parks everything else."
+    },
     "parameters": {
       "type": "object",
       "required": ["type"],

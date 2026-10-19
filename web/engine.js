@@ -30,7 +30,28 @@ const DEFAULT_MAX_CONTEXT_TOKENS = 32768;
  * rejected call (resolveApproval(false) stays the only way through). */
 const RETRY_ONCE_LIMIT = 1;
 
-function newState({ session_id, model, max_turns = 8 }) {
+/* Phase 8 permission modes — JS port of the check in
+ * core/tool_registry._requires_approval(). The hardcoded run_code gate always
+ * wins; ``state=null`` keeps the pre-Phase-8 behavior (definition flag only).
+ *
+ *   default — park approval-gated tools, run the rest
+ *   plan    — park anything that is not read_only (propose, don't mutate)
+ *   auto    — auto-approve gated tools except HARDCODED_APPROVAL_TOOLS
+ *   strict  — park every tool call, read-only included
+ */
+const PERMISSION_MODES = ["default", "plan", "auto", "strict"];
+const HARDCODED_APPROVAL_TOOLS = new Set(["run_code"]);
+
+function requiresApproval(tool, name, state) {
+  if (HARDCODED_APPROVAL_TOOLS.has(name)) return true;
+  const mode = state && state.permission_mode ? state.permission_mode : "default";
+  if (mode === "strict") return true;
+  if (mode === "plan") return !(tool && tool.read_only);
+  if (mode === "auto") return false;
+  return Boolean(tool && tool.requires_approval);
+}
+
+function newState({ session_id, model, max_turns = 8, permission_mode = "default" }) {
   return {
     session_id: session_id || "browser-" + Math.random().toString(36).slice(2, 10),
     target: "webgpu",
@@ -42,6 +63,7 @@ function newState({ session_id, model, max_turns = 8 }) {
     pending_calls: [],
     retry_count: 0,
     plan: null,
+    permission_mode: PERMISSION_MODES.includes(permission_mode) ? permission_mode : "default",
   };
 }
 
@@ -49,8 +71,8 @@ function lastMessage(state) {
   return state.messages.length ? state.messages[state.messages.length - 1] : null;
 }
 
-function createEngine({ provider, tools, parser, session_id, model, max_turns = 8, max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS, events = null, memory = null }) {
-  const state = newState({ session_id, model, max_turns });
+function createEngine({ provider, tools, parser, session_id, model, max_turns = 8, max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS, permission_mode = "default", events = null, memory = null }) {
+  const state = newState({ session_id, model, max_turns, permission_mode });
   let emitting = events;
 
   function emit(event, data) {
@@ -115,7 +137,7 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
       emit("tool_result", { call_id: call.id, content, error: true });
       return;
     }
-    if (tool.requires_approval) {
+    if (requiresApproval(tool, call.name, state)) {
       state.pending_approval = {
         call_id: call.id,
         tool_name: call.name,
@@ -249,12 +271,21 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
     return state;
   }
 
+  function setPermissionMode(mode) {
+    if (!PERMISSION_MODES.includes(mode)) {
+      throw new Error(`invalid permission mode: ${JSON.stringify(mode)}`);
+    }
+    state.permission_mode = mode;
+    return state;
+  }
+
   return {
     state,
     start,
     resolveApproval,
     addUserMessage,
+    setPermissionMode,
   };
 }
 
-export { createEngine, newState };
+export { createEngine, newState, requiresApproval, PERMISSION_MODES, HARDCODED_APPROVAL_TOOLS };

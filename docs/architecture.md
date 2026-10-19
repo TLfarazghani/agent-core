@@ -59,31 +59,34 @@ agent-core/
     __init__.py
     state.py               # pydantic AgentState / ChatMessage / PendingApproval / Plan
     parser.py              # ast-based Pythonic tool-call extraction, no eval (stdlib only)
-    tool_registry.py       # schema validation on register(), approval gate in dispatch()
+    tool_registry.py       # schema validation on register(), approval gate + permission modes in dispatch()
     loop.py                # step() / resolve_approval() / retry-once, platform-agnostic
     context.py             # token budget: estimate_tokens (chars/4) + trim_to_budget (Phase 6)
     meta.py                # AGENT_NAME, agent_bio, inspect_self (Phase 5 identity)
     memory.py              # ~/.agent-core/memory/ JSON store, traversal guard, bounded recall
     planner.py             # make_plan / update_plan on AgentState.plan
     reflection.py          # one-line lessons written to memory on terminal turns
+    commands.py            # Phase 8: shared slash-command table (CLI + web consume it)
   tools/                   # real tool handlers
-    registry.json          # all tool definitions (echo, run_code, networked, doc-gen, cognitive)
+    registry.json          # all tool definitions (echo, run_code, networked, doc-gen, cognitive, files)
     remote.py              # McpClient — stdlib JSON-RPC MCP tools/call transport (portable)
-    __init__.py            # register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools
+    __init__.py            # register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools / register_files_tools
     cognitive.py           # state-aware handlers: inspect_self / remember / recall / make_plan / update_plan
+    files.py               # Phase 9: read_file / write_file / edit_file / list_dir / glob / grep (rooted)
     create_docx.py         # python-docx handler (Phase 2)
     create_pptx.py         # python-pptx handler (Phase 2)
     run_code.py            # Docker sandbox handler, watchdog timeout (Phase 3)
   windows/                 # Windows transport (llama.cpp) — Phase 4
     server_config.ps1      # llama-server launch params
     orchestrator.py        # LlamaCppProvider: AgentState → OpenAI v3 request → ChatMessage
-  cli.py                   # REPL: renders AgentState, streams text, resolves approvals
+  cli.py                   # REPL: renders AgentState, streams text, runs core.commands
   Core-agent.bat           # one-click launcher: llama-server + Docker check + web UI + browser
   web/                     # Web UI + agent API server (stdlib only)
     server.py              # ThreadingHTTPServer; SSE API (token/tool_call/approval/done); sessions
     index.html             # SPA shell
     style.css              # dark local-first theme (approval amber, tool gray)
-    app.js                 # renders AgentState, tool cards, approval modal, session sidebar
+    app.js                 # renders AgentState, tool cards, approval modal, session sidebar, slash commands
+    commands.js            # Phase 8 JS port of core/commands.py (browser worker + Node tests)
   web/context.js           # JS port of core/context.py (Phase 6)
   web/engine.js            # in-browser loop, JS port of core/loop.py (+ plan/retry/lesson)
   web/memory.js            # JS port of core/memory.py (localStorage/IndexedDB backend)
@@ -96,6 +99,7 @@ agent-core/
   test_networked_tools.py  # Phase 1 (stdlib mock MCP-remote)
   test_docgen_tools.py     # Phase 2 (real .docx/.pptx round-trip)
   test_runcode.py          # Phase 3 (fake docker client)
+  test_files.py            # Phase 9 (tempfile root; approval + traversal)
   test_orchestrator.py     # Phase 4 (stubbed OpenAI client)
   test_web.py              # Web UI (fake provider + ephemeral server)
   test_context.py          # Phase 6 (token budget invariants)
@@ -134,6 +138,24 @@ sequenceDiagram
     end
     CORE-->>CLI: updated state
 ```
+
+## Permission modes (Phase 8)
+
+`AgentState.permission_mode` (`default | plan | auto | strict`) is enforced inside
+`ToolRegistry._requires_approval()` ? the only place a call is parked. The hardcoded
+`HARDCODED_APPROVAL_TOOLS` check (`run_code`) runs first, so no mode can bypass it:
+only `resolve_approval(approved=True)` executes a parked `run_code` call.
+
+| Mode | Behavior |
+|---|---|
+| `default` | park `requires_approval` tools, run the rest |
+| `plan` | run only `read_only` tools, park everything else |
+| `auto` | auto-approve gated tools except `run_code` |
+| `strict` | park every tool call |
+
+The web/browser mirror is `requiresApproval()` in `web/engine.js`; the mode is a
+per-session setting (`POST /api/sessions`, the sidebar selector, `/mode`) that
+serializes with the session.
 
 ## Approval gate (enforced in code, not convention)
 

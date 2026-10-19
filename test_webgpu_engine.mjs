@@ -11,17 +11,21 @@
 
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { createEngine } from "./web/engine.js";
+import { createEngine, newState, requiresApproval, PERMISSION_MODES } from "./web/engine.js";
 import { estimateTokens, trimToBudget } from "./web/context.js";
 import { makePlan, updatePlan } from "./web/planner.js";
+import { COMMANDS, helpText, parseCommand, runCommand } from "./web/commands.js";
 
 const require = createRequire(import.meta.url);
 const Parser = require("./web/parser.js");
 
 const TOOLS = {
-  echo: { requires_approval: false, run: async (args) => `echo: ${args.text}` },
+  echo: { requires_approval: false, read_only: true, run: async (args) => `echo: ${args.text}` },
+  mutate: { requires_approval: false, read_only: false, run: async (args) => `mutated: ${args.text}` },
+  risky: { requires_approval: true, read_only: false, run: async (args) => `risky: ${args.code}` },
   run_code: {
     requires_approval: true,
+    read_only: false,
     run: async (args) => `ran: ${args.code}`,
   },
 };
@@ -319,6 +323,160 @@ async function test_lesson_emitted_on_terminal_failure() {
   assert.ok(events.some(([e]) => e === "lesson"), "expected a lesson event");
 }
 
+/* ---------- Phase 8: permission modes + shared commands ---------- */
+
+function modeEngine(mode, content) {
+  const provider = { generate: async () => ({ role: "assistant", content }) };
+  return makeEngine(provider, { permission_mode: mode });
+}
+
+async function test_mode_default_parks_only_gated_tools() {
+  const { engine, events } = modeEngine("default", ECHO_BLOCK);
+  await engine.start();
+  assert.ok(events.some(([e]) => e === "tool_result"), "echo should run in default mode");
+
+  const blocked = modeEngine("default", '<|tool_call_start|>risky(code="x")<|tool_call_end|>');
+  await blocked.engine.start();
+  assert.ok(blocked.events.some(([e]) => e === "approval"), "risky should be parked");
+}
+
+async function test_mode_plan_runs_only_read_only_tools() {
+  const allowed = modeEngine("plan", ECHO_BLOCK);
+  await allowed.engine.start();
+  assert.ok(allowed.events.some(([e]) => e === "tool_result"), "read-only echo runs in plan mode");
+
+  const parked = modeEngine("plan", '<|tool_call_start|>mutate(text="x")<|tool_call_end|>');
+  await parked.engine.start();
+  assert.ok(parked.events.some(([e]) => e === "approval"), "mutating tool is parked in plan mode");
+  assert.ok(!parked.events.some(([e]) => e === "tool_result"), "mutating tool must not run");
+}
+
+async function test_mode_auto_runs_gated_tools_but_never_run_code() {
+  const risky = modeEngine("auto", '<|tool_call_start|>risky(code="x")<|tool_call_end|>');
+  await risky.engine.start();
+  const result = risky.events.find(([e]) => e === "tool_result");
+  assert.ok(result, "auto mode should run risky without approval");
+  assert.equal(result[1].content, "risky: x");
+
+  const sandbox = modeEngine("auto", RUN_BLOCK);
+  await sandbox.engine.start();
+  assert.ok(sandbox.events.some(([e]) => e === "approval"), "run_code stays gated in auto mode");
+  assert.equal(sandbox.engine.state.pending_approval.tool_name, "run_code");
+  await sandbox.engine.resolveApproval(false);
+  const results = sandbox.events.filter(([e]) => e === "tool_result");
+  assert.equal(results.length, 1, "rejection records exactly one tool result");
+  assert.equal(results[0][1].content, "rejected by user", "rejected run_code must not run");
+  assert.ok(!results.some(([, d]) => d.content === "ran: print(1)"));
+}
+
+async function test_mode_strict_parks_every_tool() {
+  for (const block of [ECHO_BLOCK, '<|tool_call_start|>mutate(text="x")<|tool_call_end|>']) {
+    const { engine, events } = modeEngine("strict", block);
+    await engine.start();
+    assert.ok(events.some(([e]) => e === "approval"), "strict parks every call");
+    assert.ok(!events.some(([e]) => e === "tool_result"), "nothing runs in strict mode");
+    assert.ok(engine.state.pending_approval);
+  }
+}
+
+async function test_requires_approval_matches_python() {
+  for (const mode of PERMISSION_MODES) {
+    const state = { permission_mode: mode };
+    assert.equal(requiresApproval(TOOLS.run_code, "run_code", state), true, `${mode}: run_code`);
+    assert.equal(requiresApproval(TOOLS.echo, "echo", state), mode === "strict", `${mode}: echo`);
+    assert.equal(
+      requiresApproval(TOOLS.mutate, "mutate", state),
+      mode === "strict" || mode === "plan",
+      `${mode}: mutate`
+    );
+    assert.equal(
+      requiresApproval(TOOLS.risky, "risky", state),
+      mode !== "auto",
+      `${mode}: risky`
+    );
+  }
+  assert.equal(requiresApproval(TOOLS.risky, "risky", null), true, "null state = legacy flag");
+  assert.equal(requiresApproval(TOOLS.echo, "echo", null), false);
+}
+
+async function test_phase9_file_tool_flags_parity() {
+  const files = {
+    read_file: { requires_approval: false, read_only: true, run: async () => "" },
+    write_file: { requires_approval: true, read_only: false, run: async () => "" },
+  };
+  for (const mode of PERMISSION_MODES) {
+    const state = { permission_mode: mode };
+    assert.equal(
+      requiresApproval(files.read_file, "read_file", state),
+      mode === "strict",
+      `${mode}: read_file`
+    );
+    assert.equal(
+      requiresApproval(files.write_file, "write_file", state),
+      mode !== "auto",
+      `${mode}: write_file`
+    );
+  }
+}
+
+async function test_new_state_defaults_permission_mode() {
+  assert.equal(newState({}).permission_mode, "default");
+  assert.equal(newState({ permission_mode: "plan" }).permission_mode, "plan");
+  assert.equal(newState({ permission_mode: "yolo" }).permission_mode, "default");
+}
+
+async function test_engine_set_permission_mode() {
+  const provider = { generate: async () => ({ role: "assistant", content: "ok." }) };
+  const { engine } = makeEngine(provider);
+  assert.equal(engine.state.permission_mode, "default");
+  engine.setPermissionMode("strict");
+  assert.equal(engine.state.permission_mode, "strict");
+  assert.throws(() => engine.setPermissionMode("yolo"), /invalid permission mode/);
+}
+
+async function test_commands_registry_parity() {
+  const names = Object.keys(COMMANDS);
+  assert.deepEqual(names.sort(), [
+    "/context", "/help", "/memory", "/mode", "/new", "/plan", "/status", "/tools", "/turns",
+  ]);
+  assert.deepEqual(parseCommand("/turns 3"), { name: "/turns", arg: "3" });
+  assert.deepEqual(parseCommand("  /mode  plan "), { name: "/mode", arg: "plan" });
+  assert.ok(helpText().includes("/mode"));
+  assert.equal(runCommand("/nope", newState({})).error, true);
+}
+
+async function test_command_mode_and_turns_mutate_state() {
+  const state = newState({});
+  const set = runCommand("/mode plan", state);
+  assert.equal(set.error, false);
+  assert.equal(state.permission_mode, "plan");
+  assert.equal(runCommand("/mode yolo", state).error, true);
+  assert.equal(state.permission_mode, "plan");
+
+  const turns = runCommand("/turns 4", state);
+  assert.equal(turns.error, false);
+  assert.equal(state.max_turns, 4);
+  assert.equal(runCommand("/turns 0", state).error, true);
+  assert.equal(state.max_turns, 4);
+}
+
+async function test_command_new_requests_clear() {
+  const state = newState({});
+  const result = runCommand("/new", state);
+  assert.equal(result.clear, true);
+  assert.equal(result.error, false);
+}
+
+async function test_command_plan_and_status_render() {
+  const state = newState({});
+  assert.ok(runCommand("/plan", state).text.includes("No plan"));
+  makePlan(state, "goal", ["one", "two"]);
+  assert.ok(runCommand("/plan", state).text.includes("goal"));
+  assert.ok(runCommand("/status", state).text.includes("permission_mode"));
+  assert.ok(runCommand("/context", state, { max_context_tokens: 2048 }).text.includes("2048"));
+  assert.ok(runCommand("/tools", state, { tools: TOOLS }).text.includes("run_code"));
+}
+
 async function main() {
   const tests = [
     test_ordinary_tool_executes,
@@ -338,6 +496,18 @@ async function main() {
     test_retry_once_recovers_with_corrected_args,
     test_retry_once_gives_up_after_second_failure,
     test_lesson_emitted_on_terminal_failure,
+    test_mode_default_parks_only_gated_tools,
+    test_mode_plan_runs_only_read_only_tools,
+    test_mode_auto_runs_gated_tools_but_never_run_code,
+    test_mode_strict_parks_every_tool,
+    test_requires_approval_matches_python,
+    test_phase9_file_tool_flags_parity,
+    test_new_state_defaults_permission_mode,
+    test_engine_set_permission_mode,
+    test_commands_registry_parity,
+    test_command_mode_and_turns_mutate_state,
+    test_command_new_requests_clear,
+    test_command_plan_and_status_render,
   ];
   let failures = 0;
   for (const test of tests) {

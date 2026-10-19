@@ -9,6 +9,8 @@
 - ``register_runcode_tool`` — Phase 3: run_code Docker sandbox (approval-gated).
 - ``register_cognitive_tools`` — Phase 5: inspect_self / remember / recall /
   make_plan / update_plan — identity, memory, planning (state-aware handlers).
+- ``register_files_tools`` — Phase 9: read_file / write_file / edit_file /
+  list_dir / glob / grep under ``AGENT_CORE_FILE_ROOT`` (writes approval-gated).
 """
 
 from __future__ import annotations
@@ -25,11 +27,27 @@ from .web_search import make_fetch_handler as make_fetch_handler
 from .create_docx import make_handler as make_docx_handler
 from .create_pptx import make_handler as make_pptx_handler
 from .run_code import make_handler as make_runcode_handler
+from .files import (
+    make_edit_file_handler,
+    make_glob_handler,
+    make_grep_handler,
+    make_list_dir_handler,
+    make_read_file_handler,
+    make_write_file_handler,
+)
 
 WEB_TOOLS = {"web_search", "fetch_url"}
 NETWORKED_TOOLS = {"send_email", "send_message"}
 DOCGEN_TOOLS = {"create_docx", "create_pptx"}
 RUNCODE_TOOLS = {"run_code"}
+FILE_TOOLS = {
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "glob",
+    "grep",
+}
 
 
 def register_web_tools(
@@ -73,4 +91,21 @@ def register_runcode_tool(
 ) -> ToolRegistry:
     handlers = {"run_code": make_runcode_handler(client=docker_client)}
     registry.load_json("tools/registry.json", handlers, names=RUNCODE_TOOLS)
+    return registry
+
+
+def register_files_tools(
+    registry: ToolRegistry,
+    root: str | Path | None = None,
+) -> ToolRegistry:
+    base = Path(root) if root is not None else None
+    handlers = {
+        "read_file": make_read_file_handler(base),
+        "write_file": make_write_file_handler(base),
+        "edit_file": make_edit_file_handler(base),
+        "list_dir": make_list_dir_handler(base),
+        "glob": make_glob_handler(base),
+        "grep": make_grep_handler(base),
+    }
+    registry.load_json("tools/registry.json", handlers, names=FILE_TOOLS)
     return registry

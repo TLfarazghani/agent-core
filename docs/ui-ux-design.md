@@ -61,12 +61,21 @@ $ agent
 
 ### 1.3 Commands
 
+All commands come from the shared table in `core/commands.py` (Phase 8), so the CLI and the web UI run identical logic.
+
 | Command | Behavior |
 |---|---|
 | `agent` | Start REPL in a new session |
-| `/new` | Start a new session (fresh `AgentState`) |
-| `/resume <id>` | Load session by id |
-| `/tools` | List registered tools (names + one-line descriptions) |
+| `/help` | List every command with usage |
+| `/new` | Start a new session (fresh `AgentState`, keeps turn budget + permission mode) |
+| `/resume <id>` | Load session by id (refreshes the identity block's clock) |
+| `/turns <n>` | Set this session's turn budget |
+| `/mode [default\|plan\|auto\|strict]` | Show or set the permission mode |
+| `/tools` | List registered tools (name, description, `approval`/`read-only` flags) |
+| `/status` | Live self snapshot (`inspect_self`) |
+| `/context` | Token budget usage + current mode |
+| `/plan` | Render `AgentState.plan` |
+| `/memory [topic]` | Recall long-term memory |
 | `/approve` / `/reject` | Resolve the current pending approval |
 | `/quit` | Persist session, exit |
 | `Ctrl-C` | Stop generation; does **not** discard the session |
@@ -112,7 +121,7 @@ $ agent
 
 | Component | Purpose | State derived from |
 |---|---|---|
-| **SessionSidebar** | List/resume sessions, new-session, delete | `AgentState.session_id` + local index |
+| **SessionSidebar** | List/resume sessions, new-session, delete, turn budget, permission-mode selector | `AgentState.session_id` + `AgentState.permission_mode` + local index |
 | **ModelStatusBar** | Model name, target, online/offline, context usage | Provider health (e.g. `llama-server /health`), `AgentState` |
 | **MessageBubble** | One `ChatMessage`; role styling (user/assistant/tool/system) | `state.messages[]` |
 | **ToolCallCard** | Collapsible card: tool name, parsed arguments (pretty JSON), status (pending/running/done/error), runtime | `ChatMessage.function_calls[]` + tool result message |

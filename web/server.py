@@ -16,6 +16,7 @@ Endpoints
     GET  /api/tools                 -> registered tool definitions
     GET  /api/search?q=..&kind=..   -> web/news/wikipedia search (no key)
     GET  /api/fetch?url=..          -> fetch a page as plain text
+    POST /api/file                  -> run a file tool {"tool", "arguments", "approved"} (Phase 9)
     POST /api/sessions              -> create a session (body: optional {"max_turns": int})
     GET  /api/sessions              -> list saved sessions
     DELETE /api/sessions            -> delete ALL sessions (returns {"deleted": int})
@@ -25,6 +26,7 @@ Endpoints
     POST /api/sessions/<id>/messages  -> run a turn, streams SSE events
     POST /api/sessions/<id>/approve   -> approve pending tool, streams SSE
     POST /api/sessions/<id>/reject    -> reject pending tool, streams SSE
+    POST /api/sessions/<id>/command   -> run a shared slash command (Phase 8)
 
 SSE event types: ``token``, ``tool_call``, ``tool_result``, ``approval``,
 ``error``, ``done`` (carries the full serialized AgentState).
@@ -48,10 +50,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core import (
     AgentState,
     ChatMessage,
+    CommandContext,
     ToolCall,
     agent_bio,
     finalize_turn,
     new_state,
+    run_command,
     should_stop_after_retries,
     user_message,
 )
@@ -70,6 +74,7 @@ from core.tool_registry import ToolRegistry
 from windows.orchestrator import (
     DEFAULT_BASE_URL,
     LlamaCppProvider,
+    default_max_context_tokens,
     default_registry,
 )
 
@@ -77,6 +82,14 @@ _WEB_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _WEB_DIR.parent
 _MODELS_DIR = _REPO_ROOT / "models"
 _HEALTH_URL = DEFAULT_BASE_URL.removesuffix("/v1") + "/health"
+FILE_API_TOOLS = {
+    "read_file",
+    "write_file",
+    "edit_file",
+    "list_dir",
+    "glob",
+    "grep",
+}
 
 ProviderFactory = Callable[[Callable[[str], None]], Any]
 
@@ -143,6 +156,7 @@ class AgentApp:
             )
         self.provider_factory = provider_factory or default_provider_factory(self.registry)
         self.health_check = health_check or default_health_check
+        self.max_context_tokens = default_max_context_tokens()
         self._sessions: dict[str, AgentState] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._lock_guard = threading.Lock()
@@ -159,8 +173,12 @@ class AgentApp:
             self._sessions[session_id] = state
         return state
 
-    def create_session(self, max_turns: int | None = None) -> AgentState:
+    def create_session(
+        self, max_turns: int | None = None, permission_mode: str | None = None
+    ) -> AgentState:
         state = new_agent_state(max_turns=max_turns)
+        if permission_mode is not None:
+            state.permission_mode = permission_mode  # type: ignore[assignment]
         state.messages.append(
             ChatMessage(role="system", content=agent_bio(state, self.registry))
         )
@@ -183,18 +201,46 @@ class AgentApp:
     def clear_session(self, session_id: str, max_turns: int | None = None) -> AgentState:
         """Reset a session to a fresh state, keeping the same session id.
 
-        The session's turn-budget setting is preserved unless an explicit
-        ``max_turns`` is supplied.
+        The session's turn-budget and permission-mode settings are preserved
+        unless an explicit value is supplied.
         """
-        keep = self.get_session(session_id).max_turns
-        state = new_agent_state(max_turns=max_turns if max_turns is not None else keep)
+        current = self.get_session(session_id)
+        keep_turns = current.max_turns
+        keep_mode = current.permission_mode
+        state = new_agent_state(max_turns=max_turns if max_turns is not None else keep_turns)
         state.session_id = session_id
+        state.permission_mode = keep_mode
         state.messages.append(
             ChatMessage(role="system", content=agent_bio(state, self.registry))
         )
         self._sessions[session_id] = state
         save_session(state)
         return state
+
+    def run_command(self, session_id: str, line: str) -> dict[str, Any]:
+        """Run a shared Phase 8 slash command against the live session."""
+        state = self.get_session(session_id)
+        result = run_command(
+            CommandContext(
+                state=state,
+                registry=self.registry,
+                max_context_tokens=self.max_context_tokens,
+            ),
+            line,
+        )
+        if result.state is not None:
+            self._sessions[result.state.session_id] = result.state
+            state = result.state
+        if result.save:
+            self._save_best_effort(state)
+        return {
+            "text": result.text,
+            "error": result.error,
+            "quit": result.quit,
+            "clear": result.clear,
+            "session_id": state.session_id,
+            "state": state.model_dump(),
+        }
 
     def _save_best_effort(self, state: AgentState) -> None:
         try:
@@ -284,6 +330,11 @@ class AgentApp:
     def health(self) -> bool:
         return self.health_check()
 
+    def commands(self) -> dict:
+        from core import COMMANDS
+
+        return COMMANDS
+
 
 class Handler(BaseHTTPRequestHandler):
     app: AgentApp
@@ -345,6 +396,16 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return value
 
+    @staticmethod
+    def _coerce_mode(body: dict[str, Any]) -> str | None:
+        from core import PERMISSION_MODES
+
+        raw = body.get("permission_mode")
+        if raw is None:
+            return None
+        value = str(raw).strip().lower()
+        return value if value in PERMISSION_MODES else None
+
     def _search_dispatch(self, app: AgentApp, args: dict[str, Any]) -> None:
         try:
             msg = app.registry.dispatch(
@@ -363,6 +424,26 @@ class Handler(BaseHTTPRequestHandler):
             )
         except Exception as exc:  # noqa: BLE001
             return self._send_json(500, {"error": f"fetch failed: {exc}"})
+        return self._send_json(200, {"result": msg.content})
+
+    def _file_dispatch(
+        self,
+        app: AgentApp,
+        tool: str,
+        args: dict[str, Any],
+        approved: bool,
+    ) -> None:
+        definition = app.registry.definition(tool)
+        if tool not in FILE_API_TOOLS or definition is None:
+            return self._send_json(400, {"error": f"unsupported file tool: {tool!r}"})
+        if definition.requires_approval and not approved:
+            return self._send_json(403, {"error": "approval required"})
+        try:
+            msg = app.registry.execute(
+                ToolCall(id=f"api:{tool}", name=tool, arguments=args)
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._send_json(500, {"error": f"file tool failed: {exc}"})
         return self._send_json(200, {"result": msg.content})
 
     def _serve_static(self, name: str) -> None:
@@ -443,23 +524,39 @@ class Handler(BaseHTTPRequestHandler):
                     "name": d.name,
                     "description": d.description,
                     "requires_approval": d.requires_approval,
+                    "read_only": d.read_only,
                 }
                 for d in app.registry.definitions()
             ]
             return self._send_json(200, {"tools": tools})
+        if path == "/api/commands":
+            from core import help_text
+
+            return self._send_json(
+                200,
+                {
+                    "commands": [
+                        {"name": name, "description": command.description, "usage": command.usage}
+                        for name, command in app.commands().items()
+                    ],
+                    "help": help_text(),
+                },
+            )
         if path == "/api/sessions":
             return self._send_json(200, {"sessions": list_sessions()})
-        if path.startswith("/api/sessions/") and not path.endswith("/messages"):
-            session_id = path.split("/")[-1]
-            if path.endswith("/approve") or path.endswith("/reject"):
+        if path.startswith("/api/sessions/"):
+            parts = path.split("/")
+            if len(parts) == 4:
+                session_id = parts[3]
+                try:
+                    state = app.get_session(session_id)
+                    return self._send_json(200, {"state": state.model_dump()})
+                except ValueError:
+                    return self._send_json(400, {"error": "invalid session id"})
+                except FileNotFoundError:
+                    return self._send_json(404, {"error": "session not found"})
+            if parts[-1] in ("approve", "reject", "command", "messages"):
                 return self._send_json(405, {"error": "POST only"})
-            try:
-                state = app.get_session(session_id)
-                return self._send_json(200, {"state": state.model_dump()})
-            except ValueError:
-                return self._send_json(400, {"error": "invalid session id"})
-            except FileNotFoundError:
-                return self._send_json(404, {"error": "session not found"})
         return self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
@@ -467,12 +564,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(403, {"error": "forbidden"})
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
+        if path == "/api/file":
+            body = self._read_json()
+            tool = str(body.get("tool", ""))
+            arguments = body.get("arguments") or {}
+            if not isinstance(arguments, dict):
+                return self._send_json(400, {"error": "arguments must be an object"})
+            return self._file_dispatch(app, tool, arguments, bool(body.get("approved")))
         if path == "/api/sessions":
             body = self._read_json()
             max_turns = self._coerce_max_turns(body)
             if "max_turns" in body and max_turns is None:
                 return self._send_json(400, {"error": "invalid max_turns"})
-            state = app.create_session(max_turns=max_turns)
+            mode = self._coerce_mode(body)
+            if "permission_mode" in body and mode is None:
+                return self._send_json(400, {"error": "invalid permission_mode"})
+            state = app.create_session(max_turns=max_turns, permission_mode=mode)
             return self._send_json(200, {"session_id": state.session_id})
         if path.startswith("/api/sessions/"):
             parts = path.split("/")
@@ -502,6 +609,16 @@ class Handler(BaseHTTPRequestHandler):
                 state.messages.append(user_message(body.get("message", "")))
                 self._stream(path, app, session_id)
                 return
+            if action == "command":
+                body = self._read_json()
+                line = str(body.get("command", "")).strip()
+                if not line:
+                    return self._send_json(400, {"error": "missing command"})
+                try:
+                    result = app.run_command(session_id, line)
+                except ValueError:
+                    return self._send_json(400, {"error": "invalid session id"})
+                return self._send_json(200, result)
             if action == "approve":
                 self._stream(path, app, session_id, approved=True)
                 return

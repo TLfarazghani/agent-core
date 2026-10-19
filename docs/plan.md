@@ -2,7 +2,7 @@
 
 Full phased build plan for agent-core. Source: `local-agent-lfm25-research.md` (2026-08-13, updated 2026-08-17), verified against Liquid Docs and the host machine.
 
-**Status (2026-10-16):** completed & gates passed — phases 0, 1, 1b, 2, 3, 5, 6, 7. Phase 4 Windows path shipped but its Android port and in-browser WebGPU model are unverified; Phase 6b compaction is not built. **Phases 8–12 below are planned, not built** (no code). Verified test run: 156 pass (135 pytest + 17 JS engine + 4 parser parity).
+**Status (2026-10-19):** completed & gates passed — phases 0, 1, 1b, 2, 3, 5, 6, 7, **8**. Phase 4 Windows path shipped but its Android port and in-browser WebGPU model are unverified; Phase 6b compaction is not built. **Phases 9–12 below are planned, not built** (no code). Verified test run: 197 pass (165 pytest + 28 JS engine/context/Phase-8 + 4 parser parity).
 
 ## Locked decisions (2026-08-17)
 
@@ -231,31 +231,32 @@ Not defined by the research doc — the three targets are Windows, Android, WebG
 
 Second-model gates (A, B) recorded in `docs/benchmarks.md`; Windows default decision made on measured data, not vibes.
 
-## Phases 8–12 — Claude Code architecture review (planned)
+## Phases 8–12 — Claude Code architecture review (Phase 8–9 built; 10–12 planned)
 
 **Source:** an architectural review of the leaked Claude Code source (`codeaashu/claude-code`, leaked 2026-03-31). That repository archives **unlicensed, proprietary** Anthropic code, so Phases 8–12 borrow **patterns only, never source**. They are the subset of its architecture that fits a local, privacy-first LFM2.5 assistant; the rest is explicitly rejected (see the mapping table below). Everything stays stdlib-only and transport-agnostic with JS/Android parity, and the hardcoded approval gate (`core/tool_registry.py:18`, `:102`) is never weakened.
 
 ## Phase 8 — Command & control surface (slash-command registry + permission modes)
 
-Agent Core's CLI exposes only `/new /turns /resume /tools /approve /reject /help /quit` (`cli.py:229`) and the web sidebar has no command surface at all. Claude Code's UX is driven by ~85 slash commands plus explicit permission modes. Port the *shape*, not the coding-specific commands.
+**Status: built (Phase 8 complete).** The CLI previously hardcoded its own `if/elif` chain and the web sidebar had no command surface at all. Claude Code's UX is driven by ~85 slash commands plus explicit permission modes; Agent Core now ports the *shape*, not the coding-specific commands.
 
-- [ ] Command registry in `core/` (stdlib-only): one table of `{name, description, handler}` shared by `cli.py` and `web/server.py`, so a command behaves identically in both UIs (same transport-agnostic rule as the loop/registry).
-- [ ] Commands that map to real Agent Core state: `/compact` (Phase 11), `/context` (budget view from `core/context.py`), `/memory` (list/forget via `core/memory.py`), `/plan` (render `AgentState.plan`), `/model` (`core.sessions.default_model` + `AGENT_CORE_MODEL`), `/doctor` + `/cost` (Phase 12), `/status` (alias of `inspect_self`). Reject the coding-only ones (`/commit`, `/pr_comments`, `/vim`, `/desktop`, `/mobile`).
-- [ ] **Permission modes** — `default` | `plan` | `auto` | `strict` — stored on `AgentState` (add to `core/state.py` + `schemas/agent_state.schema.json`, sync `docs/data-contracts.md`). Enforced **inside `core/tool_registry.dispatch()`**, never model-decided. `strict` = current behavior; `auto` auto-approves only non-`run_code` tools; `plan` runs read-only/planning tools and parks anything that mutates state; `default` = ask. `run_code` is never bypassable in any mode.
-- [ ] JS parity: `web/commands.js` + a permission-mode check in `web/engine.js` mirroring `dispatch()`; parity test in `test_webgpu_engine.mjs`.
-- [ ] Tests: command-registry round-trip (CLI and web handler identical), each permission mode's dispatch outcome, and that **no mode lets `run_code` skip `resolve_approval`**.
+- [x] Command registry in `core/commands.py` (stdlib-only): one `COMMANDS` table of `{name, description, usage, handler}` plus `CommandContext` / `CommandResult` (`text, state, quit, clear, error, save`), consumed by **both** `cli.py` and `web/server.py` (`POST /api/sessions/<id>/command`, `GET /api/commands`). The CLI's old `if/elif` chain is gone.
+- [x] Commands that map to real Agent Core state: `/help`, `/new`, `/resume`, `/turns`, `/mode`, `/tools`, `/status` (`inspect_self`), `/context` (`core/context.py` budget), `/plan` (render `AgentState.plan`), `/memory` (`core/memory.py` recall), `/approve`, `/reject`, `/quit`. `/compact` and `/doctor` + `/cost` remain for Phases 11 and 12. Coding-only commands (`/commit`, `/pr_comments`, `/vim`, `/desktop`, `/mobile`) are rejected.
+- [x] **Permission modes** — `default` | `plan` | `auto` | `strict` — on `AgentState.permission_mode` (`core/state.py` + `schemas/agent_state.schema.json` + `docs/data-contracts.md`), plus `ToolDefinition.read_only`. Enforced **inside `core/tool_registry.dispatch()`** (`_requires_approval`), never model-decided: `default` = ask for `requires_approval` tools (pre-Phase-8 behavior); `plan` = run only `read_only` tools, park everything else; `auto` = auto-approve gated tools except `HARDCODED_APPROVAL_TOOLS`; `strict` = park every tool call. `run_code` is never bypassable in any mode — only `resolve_approval(approved=True)` executes it.
+- [x] JS parity: `web/commands.js` (same table shape, 9 browser commands), `requiresApproval()` in `web/engine.js`, `permission_mode` in `newState`/`createEngine`/`setPermissionMode`, `read_only` flags in `web/worker.js` `BROWSER_TOOLS`; parity cases in `test_webgpu_engine.mjs`.
+- [x] UI: web sidebar permission-mode selector (`#permission-mode`), slash commands routed from the composer (`POST /api/sessions/<id>/command` or the worker's `command` message), mode carried through session create/clear and restored when selecting a session.
+- [x] Tests: `test_commands.py` (registry shape, every command, CLI/web parity of the table, approve/reject through the gate), `test_permission_modes.py` (each mode's dispatch outcome + `run_code` never bypassable), `test_web.py` (`/api/command`, `/api/commands`, per-session mode, clear preserves mode), `test_webgpu_engine.mjs` (mode gate + command parity).
 
-**Gate:** the same command produces the same result in CLI and web; every permission mode still routes `run_code` through the approval gate.
+**Gate:** the same command produces the same result in CLI and web; every permission mode still routes `run_code` through the approval gate. Both hold.
 
 ## Phase 9 — File & code-intelligence tools
 
-Claude Code's largest tool category is file I/O + search (`FileReadTool`, `FileWriteTool`, `FileEditTool`, `GlobTool`, `GrepTool`). Agent Core has none — `run_code` is the only filesystem-capable path, forcing the approval gate for trivial reads.
+**Status: built (Phase 9 complete).** Claude Code's largest tool category is file I/O + search (`FileReadTool`, `FileWriteTool`, `FileEditTool`, `GlobTool`, `GrepTool`). Agent Core had none — `run_code` was the only filesystem-capable path, forcing the approval gate for trivial reads.
 
-- [ ] `tools/files.py` — handlers `read_file(path, max_chars?)`, `write_file(path, content)`, `edit_file(path, old_string, new_string)` (string-replacement, Claude Code's `FileEditTool` semantics), `list_dir(path)`, `glob(pattern, root?)`, `grep(pattern, path?, max_results?)`.
-- [ ] **Approval policy:** reads/list/glob/grep are `requires_approval: false`; `write_file` / `edit_file` are `requires_approval: true` — enforced by definition *and* the same hardcoded gate as `run_code`.
-- [ ] **Security:** reuse the `tools/_paths.py` / `core/sessions.py` precedent — resolve paths and enforce an allowed-root policy (default: working dir + `output/`), reject traversal. `edit_file` fails atomically when `old_string` is absent or non-unique.
-- [ ] Web/Android parity: browser tools behind a user-granted directory handle (File System Access API) or routed through `/api`; document the platform ceiling where a browser cannot touch arbitrary paths.
-- [ ] Tests: `test_files.py` (temp dir) — read/edit round-trip, unique-match enforcement, traversal rejection, approval halts `write_file`/`edit_file`.
+- [x] `tools/files.py` — handlers `read_file(path, max_chars?)`, `write_file(path, content)`, `edit_file(path, old_string, new_string)` (string-replacement, Claude Code's `FileEditTool` semantics), `list_dir(path)`, `glob(pattern, root?)`, `grep(pattern, path?, max_results?)`; registered via `register_files_tools` in `tools/__init__.py` + `windows/orchestrator.py:default_registry()`.
+- [x] **Approval policy:** reads/list/glob/grep are `requires_approval: false` **and** `read_only: true`; `write_file` / `edit_file` are `requires_approval: true` — enforced by definition *and* the same hardcoded gate as `run_code`.
+- [x] **Security:** `AGENT_CORE_FILE_ROOT` (default repo root) is the allowed root; `resolve_path()` resolves then asserts the target stays under it (symlink escapes included), and traversal is rejected. Writes are atomic (temp file + `os.replace`); `edit_file` fails when `old_string` is absent or non-unique.
+- [x] Web/Android parity: browser `BROWSER_TOOLS` proxies the six tools through `POST /api/file` (`web/server.py` `_file_dispatch`, loopback/CSRF-guarded); the endpoint refuses `write_file`/`edit_file` without `approved: true`. Documented ceiling: host files only, under the server's file root.
+- [x] Tests: `test_files.py` (tempfile root) — read/edit round-trip, unique-match enforcement, traversal rejection, approval halts `write_file`/`edit_file`; `/api/file` in `test_web.py`; `test_phase9_file_tool_flags_parity` in `test_webgpu_engine.mjs`.
 
 **Gate:** the agent can read, search, and edit files; every mutating call halts at the approval gate; path traversal is rejected.
 

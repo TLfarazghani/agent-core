@@ -274,10 +274,11 @@ class LlamaCppProvider:
 
 
 def default_registry() -> ToolRegistry:
-    """Full local registry (web search + doc-gen + run_code + cognitive)."""
+    """Full local registry (web search + doc-gen + run_code + cognitive + files)."""
     from tools import (
         register_cognitive_tools,
         register_docgen_tools,
+        register_files_tools,
         register_runcode_tool,
         register_web_tools,
     )
@@ -287,4 +288,5 @@ def default_registry() -> ToolRegistry:
     register_docgen_tools(registry)
     register_runcode_tool(registry)
     register_cognitive_tools(registry)
+    register_files_tools(registry)
     return registry

@@ -43,6 +43,7 @@ def agent_bio(
         f"Target: {state.target}. Model: {state.model}.\n"
         f"Context budget: {estimate_tokens(state.messages)} ~tokens / {max_context_tokens}.\n"
         f"Turn budget: {state.turn_count}/{state.max_turns} used.\n"
+        f"Permission mode: {getattr(state, 'permission_mode', 'default')}.\n"
         f"Available tools: {tools}.\n"
         "You answer questions about yourself from this block; never invent "
         "capabilities you do not have."
@@ -68,6 +69,7 @@ def inspect_self(
             state.pending_approval.model_dump() if state.pending_approval else None
         ),
         "plan": state.plan.model_dump() if state.plan else None,
+        "permission_mode": getattr(state, "permission_mode", "default"),
         "tools": sorted(d.name for d in registry.definitions()),
     }
     return json.dumps(snapshot, indent=2)

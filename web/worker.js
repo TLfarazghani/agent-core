@@ -37,7 +37,8 @@
  */
 
 import "./parser.js";
-import { createEngine } from "./engine.js";
+import { createEngine, PERMISSION_MODES } from "./engine.js";
+import { runCommand } from "./commands.js";
 import { estimateTokens } from "./context.js";
 import { recallBounded, saveMemory as memorySave } from "./memory.js";
 import { makePlan as planMake, updatePlan as planUpdate } from "./planner.js";
@@ -58,7 +59,10 @@ const SYSTEM_PROMPT =
   "fetching pages (fetch_url), running code in a sandbox (run_code), and " +
   "long-term memory across sessions (remember, recall). You can introspect " +
   "yourself (inspect_self) and track multi-step tasks (make_plan, " +
-  "update_plan). Your limits: you run locally with no external APIs beyond " +
+  "update_plan). You can read, search, and edit files under the server's " +
+  "file root (read_file, write_file, edit_file, list_dir, glob, grep); file " +
+  "writes always ask for approval. " +
+  "Your limits: you run locally with no external APIs beyond " +
   "web search, and run_code always asks the user for approval. " +
   "When the user asks you to run or " +
   "execute code, you MUST call the run_code tool (python only). When the user " +
@@ -69,9 +73,21 @@ const SYSTEM_PROMPT =
   "Tool calls use this exact format:\n" +
   "<|tool_call_start|>web_search(query=\"...\", kind=\"web\")<|tool_call_end|>";
 
+async function callFileTool(tool, args, approved = false) {
+  const resp = await fetch("/api/file", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tool, arguments: args, approved }),
+  });
+  const data = await resp.json();
+  if (data.error) return `error: ${data.error}`;
+  return data.result;
+}
+
 const BROWSER_TOOLS = {
   echo: {
     requires_approval: false,
+    read_only: true,
     run: async (args) => `echo: ${args.text}`,
   },
   run_code: {
@@ -80,6 +96,7 @@ const BROWSER_TOOLS = {
   },
   web_search: {
     requires_approval: false,
+    read_only: true,
     run: async (args) => {
       const params = new URLSearchParams({ q: args.query });
       if (args.kind) params.set("kind", args.kind);
@@ -92,6 +109,7 @@ const BROWSER_TOOLS = {
   },
   fetch_url: {
     requires_approval: false,
+    read_only: true,
     run: async (args) => {
       const params = new URLSearchParams({ url: args.url });
       if (args.max_chars) params.set("max_chars", String(args.max_chars));
@@ -101,8 +119,37 @@ const BROWSER_TOOLS = {
       return data.result;
     },
   },
+  read_file: {
+    requires_approval: false,
+    read_only: true,
+    run: async (args) => callFileTool("read_file", args),
+  },
+  write_file: {
+    requires_approval: true,
+    run: async (args) => callFileTool("write_file", args, true),
+  },
+  edit_file: {
+    requires_approval: true,
+    run: async (args) => callFileTool("edit_file", args, true),
+  },
+  list_dir: {
+    requires_approval: false,
+    read_only: true,
+    run: async (args) => callFileTool("list_dir", args),
+  },
+  glob: {
+    requires_approval: false,
+    read_only: true,
+    run: async (args) => callFileTool("glob", args),
+  },
+  grep: {
+    requires_approval: false,
+    read_only: true,
+    run: async (args) => callFileTool("grep", args),
+  },
   inspect_self: {
     requires_approval: false,
+    read_only: true,
     stateful: true,
     run: async (state, args) => {
       const snapshot = {
@@ -144,6 +191,7 @@ const BROWSER_TOOLS = {
   },
   recall: {
     requires_approval: false,
+    read_only: true,
     stateful: true,
     run: async (state, args) => {
       const topic = args.topic || "";
@@ -156,6 +204,7 @@ const BROWSER_TOOLS = {
   },
   make_plan: {
     requires_approval: false,
+    read_only: true,
     stateful: true,
     run: async (state, args) => {
       let steps = args.steps;
@@ -169,6 +218,7 @@ const BROWSER_TOOLS = {
   },
   update_plan: {
     requires_approval: false,
+    read_only: true,
     stateful: true,
     run: async (state, args) => {
       try {
@@ -343,13 +393,14 @@ function agentBio(state) {
     `Target: ${state.target}. Model: ${state.model}.\n` +
     `Context budget: ${estimateTokens(state.messages)} ~tokens / ${ONNX_CONTEXT_TOKENS}.\n` +
     `Turn budget: ${state.turn_count}/${state.max_turns} used.\n` +
+    `Permission mode: ${state.permission_mode || "default"}.\n` +
     `Available tools: ${tools}.\n` +
     "You answer questions about yourself from this block; never invent " +
     "capabilities you do not have."
   );
 }
 
-function resetSession(maxTurns) {
+function resetSession(maxTurns, permissionMode) {
   engine = createEngine({
     provider: { generate },
     tools: BROWSER_TOOLS,
@@ -357,6 +408,7 @@ function resetSession(maxTurns) {
     model: MODEL_ID,
     max_turns: Number.isInteger(maxTurns) && maxTurns >= 1 ? maxTurns : 8,
     max_context_tokens: ONNX_CONTEXT_TOKENS,
+    permission_mode: PERMISSION_MODES.includes(permissionMode) ? permissionMode : "default",
     memory: { saveMemory: memorySave },
   });
   engine.state.messages.push({ role: "system", content: SYSTEM_PROMPT });
@@ -523,6 +575,28 @@ async function runPyodide(args) {
   }
 }
 
+function runBrowserCommand(line) {
+  const outcome = runCommand(line, engine.state, {
+    max_context_tokens: ONNX_CONTEXT_TOKENS,
+    tools: BROWSER_TOOLS,
+  });
+  if (outcome.clear) {
+    const keepMode = engine.state.permission_mode;
+    resetSession(engine.state.max_turns, keepMode);
+    return {
+      text: outcome.text,
+      error: Boolean(outcome.error),
+      clear: true,
+      state: JSON.parse(JSON.stringify(engine.state)),
+    };
+  }
+  return {
+    text: outcome.text,
+    error: Boolean(outcome.error),
+    state: JSON.parse(JSON.stringify(engine.state)),
+  };
+}
+
 /* ---------- message handling ---------- */
 
 self.onmessage = async (event) => {
@@ -546,9 +620,27 @@ self.onmessage = async (event) => {
         break;
       }
       case "reset":
-        resetSession(msg.max_turns);
+        resetSession(msg.max_turns, msg.permission_mode);
         post("done", { state: JSON.parse(JSON.stringify(engine.state)) });
         break;
+      case "command": {
+        if (!engine) resetSession();
+        const line = String(msg.command || "").trim();
+        if (!line) throw new Error("missing command");
+        const result = runBrowserCommand(line);
+        post("command_result", result);
+        break;
+      }
+      case "mode": {
+        if (!engine) resetSession();
+        engine.setPermissionMode(String(msg.permission_mode || ""));
+        post("command_result", {
+          text: `Permission mode set to ${engine.state.permission_mode}.`,
+          error: false,
+          state: JSON.parse(JSON.stringify(engine.state)),
+        });
+        break;
+      }
       default:
         throw new Error(`unknown message type: ${msg.type}`);
     }

@@ -19,6 +19,15 @@
         <label for="max-turns-input" class="mono">turn budget</label>
         <input id="max-turns-input" type="number" min="1" value="8" title="Loop turns per session (applies to the next new/cleared session)" />
       </div>
+      <div id="mode-setting">
+        <label for="permission-mode" class="mono">permission mode</label>
+        <select id="permission-mode" title="default = ask when a tool needs approval · plan = read-only tools only · auto = approve gated tools except run_code · strict = ask before every tool">
+          <option value="default">default</option>
+          <option value="plan">plan</option>
+          <option value="auto">auto</option>
+          <option value="strict">strict</option>
+        </select>
+      </div>
       <ul id="session-list"></ul>
       <div id="transport-toggle">
         <button id="transport-server" class="btn btn-small active">local</button>
