@@ -20,6 +20,34 @@ sys.path.insert(0, r"C:\hermes\agent-core\web")
 from server import AgentApp, make_server  # noqa: E402
 
 
+def _external_resolver(host: Any, port: Any):
+    """Fake getaddrinfo: every host resolves to a public external address so
+    the SSRF guard passes without touching live DNS."""
+
+    return [(2, 1, 6, "", ("93.184.216.34", 80))]
+
+
+class _FakeSearchPage:
+    """Single-shot .read (like a real HTTPResponse). The SSRF guard reads in
+    chunks until EOF, so a repeated-return read() would hit the byte cap."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text.encode("utf-8")
+        self._read_done = False
+
+    def read(self, *args: Any) -> bytes:
+        if self._read_done:
+            return b""
+        self._read_done = True
+        return self._text
+
+    def __enter__(self) -> "_FakeSearchPage":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+
 class FakeProvider:
     def __init__(self, script: list[ChatMessage]) -> None:
         self.script = script
@@ -727,28 +755,15 @@ def test_api_search_proxy_returns_results() -> None:
     registry = ToolRegistry()
     from tools import register_web_tools
 
-    class FakePage:
-        def __init__(self, text: str) -> None:
-            self._text = text.encode("utf-8")
-
-        def read(self, *args: Any) -> bytes:
-            return self._text
-
-        def __enter__(self) -> "FakePage":
-            return self
-
-        def __exit__(self, *exc: Any) -> None:
-            return None
-
     class FakeUrlopen:
-        def __call__(self, request: Any, timeout: int) -> FakePage:
+        def __call__(self, request: Any, timeout: int) -> _FakeSearchPage:
             assert request.full_url.startswith("https://html.duckduckgo.com/html/")
-            return FakePage(
+            return _FakeSearchPage(
                 '<a class="result__a" href="https://example.com">Example</a>'
                 '<a class="result__snippet" href="https://example.com">A snippet.</a>'
             )
 
-    register_web_tools(registry, urlopen=FakeUrlopen())
+    register_web_tools(registry, urlopen=FakeUrlopen(), resolver=_external_resolver)
     server, thread = _start_web_server(registry)
     try:
         payload = _retry_transport(
@@ -766,26 +781,13 @@ def test_api_fetch_proxy_strips_html() -> None:
     registry = ToolRegistry()
     from tools import register_web_tools
 
-    class FakePage:
-        def __init__(self, text: str) -> None:
-            self._text = text.encode("utf-8")
-
-        def read(self, *args: Any) -> bytes:
-            return self._text
-
-        def __enter__(self) -> "FakePage":
-            return self
-
-        def __exit__(self, *exc: Any) -> None:
-            return None
-
     class FakeUrlopen:
-        def __call__(self, request: Any, timeout: int) -> FakePage:
-            return FakePage(
+        def __call__(self, request: Any, timeout: int) -> _FakeSearchPage:
+            return _FakeSearchPage(
                 "<html><body><h1>Hello</h1><p>world of web.</p></body></html>"
             )
 
-    register_web_tools(registry, urlopen=FakeUrlopen())
+    register_web_tools(registry, urlopen=FakeUrlopen(), resolver=_external_resolver)
     server, thread = _start_web_server(registry)
     try:
         payload = _retry_transport(

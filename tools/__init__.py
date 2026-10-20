@@ -63,10 +63,16 @@ FILE_TOOLS = {
 def register_web_tools(
     registry: ToolRegistry,
     urlopen: Callable | None = None,
+    resolver: Callable | None = None,
 ) -> ToolRegistry:
+    """web_search + fetch_url behind the SSRF guard.
+
+    Inject ``urlopen`` (fake HTTP) and ``resolver`` (fake DNS) in tests so no
+    network or live DNS is touched; both default to the real guarded transport.
+    """
     handlers = {
-        "web_search": make_websearch_handler(urlopen=urlopen),
-        "fetch_url": make_fetch_handler(urlopen=urlopen),
+        "web_search": make_websearch_handler(urlopen=urlopen, resolver=resolver),
+        "fetch_url": make_fetch_handler(urlopen=urlopen, resolver=resolver),
     }
     registry.load_json("tools/registry.json", handlers, names=WEB_TOOLS)
     return registry

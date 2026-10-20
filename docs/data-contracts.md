@@ -130,7 +130,7 @@ The mode is read in `ToolRegistry._requires_approval(definition, state)`. The ha
 }
 ```
 
-`web_search` backends: `web` → DuckDuckGo HTML, `news` → Google News RSS, `wikipedia` → Wikipedia Search API. In the browser, both tools proxy through `web/server.py` (`/api/search`, `/api/fetch`) to avoid CORS; neither requires approval and both are `read_only: true`.
+`web_search` backends: `web` → DuckDuckGo HTML, `news` → Google News RSS, `wikipedia` → Wikipedia Search API. In the browser, both tools proxy through `web/server.py` (`/api/search`, `/api/fetch`) to avoid CORS; neither requires approval and both are `read_only: true`. Both sit behind the SSRF destination guard (2026-10-20) in `tools/web_search.py`: http(s)-only scheme, destinations resolved and checked after DNS (private/loopback/link-local/metadata excluded), every redirect target re-checked, per-hop 1 MB byte cap + existing `max_chars` text cap.
 
 **Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue), opt-in via `MCP_BASE_URL` (`send_email` migrated to native SMTP in the default registry, see its risk class below; `send_message` remains here):**
 

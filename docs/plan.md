@@ -80,6 +80,8 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 - [x] Browser proxy: `web/server.py` `GET /api/search` + `GET /api/fetch` (avoids CORS), and `web/worker.js` in-browser `web_search`/`fetch_url` tools route through them
 - [x] Tests: `test_web_search.py` (8 tests, fake urlopen: DDG/News/Wikipedia parsing, fetch text extraction, arg validation) + 2 web-proxy tests in `test_web.py`. Live-verified 2026-08-18: real DDG results, real Google News headlines, real Wikipedia entries, real page fetch
 
+**2026-10-20 addendum — SSRF destination guard.** `fetch_url`/`web_search` transports now sit behind `tools/web_search._make_guard`: scheme http(s)-only on every hop, destination host resolved and checked after DNS (private/loopback/link-local/metadata/reserved/multicast/unspecified rejected), redirects followed manually with the guard re-run against every Location target (hop cap 5), response bodies capped at 1 MB (byte cap) in addition to the existing `max_chars` text cap. Injectable `resolver` joins the injectable `urlopen` seam; tests never touch live DNS. Residual risk documented (DNS-rebinding TOCTOU until IP pinning lands). Live-verified 2026-10-20: real `https://example.com` fetch OK, `http://169.254.169.254/` + `192.168.1.1` blocked before any connection, real `http://github.com` multi-hop redirect chain followed (which surfaced and fixed an `http.client.IncompleteRead` EOF quirk in the chunked reader).
+
 ## Phase 2 — Local doc-gen (per-platform backends)
 
 - [x] `tools/create_docx.py` — `create_docx(title, sections)` via python-docx (writes to output dir, unique filenames)
