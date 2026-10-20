@@ -89,19 +89,24 @@ def _dispatch(registry: ToolRegistry, name: str, args: dict) -> ChatMessage:
     return registry.dispatch(_new_state(), ToolCall(id="call_0001", name=name, arguments=args))
 
 
-def test_web_search_returns_results() -> None:
+def test_send_message_result_gated_then_received() -> None:
+    """send_message is ALWAYS-confirm gated (2026-10-20): parks first, then the
+    mock receives the tools/call only after an explicit approval."""
     server = MockMcpServer()
     server.start()
     try:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
-        msg = _dispatch(registry, "send_message", {"channel": "telegram", "to": "me", "text": "hi"})
-        assert msg is not None
-        assert msg.role == "tool"
-        assert "message sent" in msg.content
+        state = _new_state()
+        msg = registry.dispatch(state, ToolCall(id="call_0001", name="send_message", arguments={"channel": "telegram", "to": "me", "text": "hi"}))
+        assert msg is None  # parked at the approval gate
+        assert state.pending_approval.tool_name == "send_message"
+        assert server.state.calls == []  # nothing dispatched before approval
+        resolve_approval(state, registry, approved=True)
         assert server.state.calls[0]["method"] == "tools/call"
         assert server.state.calls[0]["params"]["name"] == "send_message"
         assert server.state.calls[0]["params"]["arguments"] == {"channel": "telegram", "to": "me", "text": "hi"}
+        assert "message sent" in state.messages[-1].content
     finally:
         server.stop()
 
@@ -167,7 +172,9 @@ def test_api_key_forwarded() -> None:
     try:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}", api_key="secret-key")
-        _dispatch(registry, "send_message", {"channel": "telegram", "to": "me", "text": "hi"})
+        state = _new_state()
+        registry.dispatch(state, ToolCall(id="call_0001", name="send_message", arguments={"channel": "telegram", "to": "me", "text": "hi"}))
+        resolve_approval(state, registry, approved=True)  # gate: external send needs human OK
         assert server.state.auth_seen == "Bearer secret-key"
     finally:
         server.stop()

@@ -36,14 +36,19 @@ const RETRY_ONCE_LIMIT = 1;
  *
  *   default — park approval-gated tools, run the rest
  *   plan    — park anything that is not read_only (propose, don't mutate)
- *   auto    — auto-approve gated tools except HARDCODED_APPROVAL_TOOLS
+ *   auto    — auto-approve gated tools except ALWAYS_CONFIRM_TOOLS
+ *             (external sends: never silently approved, like run_code)
  *   strict  — park every tool call, read-only included
  */
 const PERMISSION_MODES = ["default", "plan", "auto", "strict"];
 const HARDCODED_APPROVAL_TOOLS = new Set(["run_code"]);
+// External side effects (real outbound messages) — gated in every mode,
+// mirrors core.tool_registry.ALWAYS_CONFIRM_TOOLS.
+const ALWAYS_CONFIRM_TOOLS = new Set(["send_email", "send_message"]);
 
 function requiresApproval(tool, name, state) {
   if (HARDCODED_APPROVAL_TOOLS.has(name)) return true;
+  if (ALWAYS_CONFIRM_TOOLS.has(name)) return true;
   const mode = state && state.permission_mode ? state.permission_mode : "default";
   if (mode === "strict") return true;
   if (mode === "plan") return !(tool && tool.read_only);
@@ -311,4 +316,4 @@ function createEngine({ provider, tools, parser, session_id, model, max_turns = 
   };
 }
 
-export { createEngine, newState, requiresApproval, PERMISSION_MODES, HARDCODED_APPROVAL_TOOLS };
+export { createEngine, newState, requiresApproval, PERMISSION_MODES, HARDCODED_APPROVAL_TOOLS, ALWAYS_CONFIRM_TOOLS };

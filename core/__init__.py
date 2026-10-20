@@ -87,11 +87,18 @@ from .telemetry import (
     run_doctor,
     session_usage,
 )
-from .tool_registry import APPROVAL_MODES, HARDCODED_APPROVAL_TOOLS, ToolRegistry, takes_state
+from .tool_registry import (
+    ALWAYS_CONFIRM_TOOLS,
+    APPROVAL_MODES,
+    HARDCODED_APPROVAL_TOOLS,
+    ToolRegistry,
+    takes_state,
+)
 
 __all__ = [
     "AGENT_NAME",
     "APPROVAL_MODES",
+    "ALWAYS_CONFIRM_TOOLS",
     "AgentState",
     "COMMANDS",
     "ChatMessage",

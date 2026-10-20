@@ -132,11 +132,11 @@ The mode is read in `ToolRegistry._requires_approval(definition, state)`. The ha
 
 `web_search` backends: `web` → DuckDuckGo HTML, `news` → Google News RSS, `wikipedia` → Wikipedia Search API. In the browser, both tools proxy through `web/server.py` (`/api/search`, `/api/fetch`) to avoid CORS; neither requires approval and both are `read_only: true`.
 
-**Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue), opt-in via `MCP_BASE_URL`:**
+**Networked — identical implementation shape across all platforms (remote HTTP/SSE, uniform MCP-remote, no subprocess transport issue), opt-in via `MCP_BASE_URL` (`send_email` migrated to native SMTP in the default registry, see its risk class below; `send_message` remains here):**
 
 ```json
-{ "name": "send_email", "parameters": { "to": "string", "subject": "string", "body": "string", "attachments": "string[]?" } }
-{ "name": "send_message", "parameters": { "channel": "whatsapp|telegram", "to": "string", "text": "string" } }
+{ "name": "send_email", "parameters": { "to": "string", "subject": "string", "body": "string", "attachments": "string[]?" }, "requires_approval": true }
+{ "name": "send_message", "parameters": { "channel": "whatsapp|telegram", "to": "string", "text": "string" }, "requires_approval": true }
 ```
 
 **Local compute — schema identical, backend is a separate implementation per platform:**
@@ -160,6 +160,8 @@ The mode is read in `ToolRegistry._requires_approval(definition, state)`. The ha
   "requires_approval": true
 }
 ```
+
+**External sends — own risk class (2026-10-20). `send_email` (native SMTP) with `requires_approval` always true, plus `ALWAYS_CONFIRM_TOOLS = {"send_email", "send_message"}` checked in `tool_registry.dispatch()`: no permission mode — `auto` included — bypasses the confirmation; only `resolve_approval(approved=True)` sends.** `send_email` moved from the opt-in MCP remote into the default registry (`tools/email.py`, config `AGENT_CORE_SMTP_*`); `send_message` stays MCP-only and also `requires_approval: true`.
 
 **Cognitive (Phase 5) — identity, memory, planning. All `requires_approval: false`; `inspect_self`, `recall`, `make_plan` and `update_plan` are `read_only: true` (only `remember` writes, so `plan` mode parks it). Handlers are state-aware (`takes_state`), invoked as `handler(state, arguments)`. Stored memory lives at `~/.agent-core/memory/` (same traversal guard as sessions):**
 

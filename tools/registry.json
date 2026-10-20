@@ -72,8 +72,8 @@
   },
   {
     "name": "send_message",
-    "description": "Send a chat message to a messaging channel.",
-    "requires_approval": false,
+    "description": "Send a chat message to a messaging channel over the MCP remote (opt-in via MCP_BASE_URL). Always requires human approval.",
+    "requires_approval": true,
     "parameters": {
       "type": "object",
       "properties": {

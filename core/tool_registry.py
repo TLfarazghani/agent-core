@@ -26,6 +26,15 @@ from .state import (
 # gated tools, but NEVER these.
 HARDCODED_APPROVAL_TOOLS = frozenset({"run_code"})
 
+# External side effects: tools that send a real message OUTSIDE this machine
+# (SMTP email, MCP chat channels). Confirmation is a hard gate in every
+# permission mode -- decided explicitly 2026-10-20: ``auto`` approves local
+# compute only (docx/files/code), it must not silently dispatch a real email
+# or chat message (a mistaken or prompt-injected call would be externally
+# visible). ``requires_approval: true`` in the definitions is the same truth
+# for callers that pass ``state=None``.
+ALWAYS_CONFIRM_TOOLS = frozenset({"send_email", "send_message"})
+
 # Phase 8 permission modes, enforced in ``dispatch()`` only:
 #   default — park approval-gated tools, run the rest
 #   plan    — park anything that is not ``read_only`` (propose, don't mutate)
@@ -113,6 +122,10 @@ class ToolRegistry:
         (definition flag only) so plain callers/tests are unaffected.
         """
         if definition.name in HARDCODED_APPROVAL_TOOLS:
+            return True
+        if definition.name in ALWAYS_CONFIRM_TOOLS:
+            # External side effects: no permission mode (not even ``auto``)
+            # bypasses this -- external sends are never silently approved.
             return True
         mode: PermissionMode = (
             getattr(state, "permission_mode", "default") if state is not None else "default"

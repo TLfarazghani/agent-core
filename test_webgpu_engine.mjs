@@ -403,6 +403,26 @@ async function test_requires_approval_matches_python() {
   assert.equal(requiresApproval(TOOLS.echo, "echo", null), false);
 }
 
+async function test_always_confirm_send_tools_in_every_mode() {
+  // Mirror of test_permission_modes.test_send_tools_confirm_in_every_mode:
+  // send_email / send_message are ALWAYS_CONFIRM_TOOLS -- true in every mode,
+  // including auto (external sends are never silently approved).
+  const sendTools = {
+    send_email: { requires_approval: true, read_only: false },
+    send_message: { requires_approval: true, read_only: false },
+  };
+  for (const mode of PERMISSION_MODES) {
+    const state = { permission_mode: mode };
+    for (const [name, tool] of Object.entries(sendTools)) {
+      assert.equal(requiresApproval(tool, name, state), true, `${mode}: ${name}`);
+    }
+  }
+  // Even a definition flag of false cannot defeat the always-confirm set.
+  const state = { permission_mode: "auto" };
+  assert.equal(requiresApproval({ requires_approval: false, read_only: false }, "send_email", state), true, "auto: send_email");
+  assert.equal(requiresApproval({ requires_approval: false, read_only: false }, "send_message", state), true, "auto: send_message");
+}
+
 async function test_phase9_file_tool_flags_parity() {
   const files = {
     read_file: { requires_approval: false, read_only: true, run: async () => "" },
@@ -733,6 +753,7 @@ async function main() {
     test_mode_auto_runs_gated_tools_but_never_run_code,
     test_mode_strict_parks_every_tool,
     test_requires_approval_matches_python,
+    test_always_confirm_send_tools_in_every_mode,
     test_phase9_file_tool_flags_parity,
     test_new_state_defaults_permission_mode,
     test_engine_set_permission_mode,

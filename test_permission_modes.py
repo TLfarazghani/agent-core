@@ -3,7 +3,11 @@
 No live model, no Docker. The point of this suite is the invariant that the
 hardcoded run_code gate always wins: ``auto`` may skip the flag, ``plan`` may
 skip non-read-only tools, ``strict`` may park everything -- but run_code still
-waits for ``resolve_approval(approved=True)`` in every mode.
+waits for ``resolve_approval(approved=True)`` in every mode. Since 2026-10-20
+the same always-gated treatment covers external side effects
+(``ALWAYS_CONFIRM_TOOLS`` = send_email / send_message): no mode, ``auto``
+included, may silently send a real email or chat message -- see
+``test_send_tools_confirm_in_every_mode``.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import jsonschema
 import pytest
 
 from core import (
+    ALWAYS_CONFIRM_TOOLS,
     APPROVAL_MODES,
     HARDCODED_APPROVAL_TOOLS,
     PERMISSION_MODES,
@@ -86,6 +91,21 @@ def make_registry() -> ToolRegistry:
         ),
         lambda arguments: "sandbox ran",
     )
+    # The real external-send definitions, under their production names.
+    for name, schema_args in (
+        ("send_email", {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"}}),
+        ("send_message", {"channel": {"type": "string"}, "to": {"type": "string"}, "text": {"type": "string"}}),
+    ):
+        registry.register(
+            ToolDefinition(
+                name=name,
+                description="External send. Always requires human approval.",
+                requires_approval=True,
+                read_only=False,
+                parameters={"type": "object", "properties": schema_args, "required": list(schema_args)},
+            ),
+            lambda arguments: f"sent: {arguments}",
+        )
     return registry
 
 
@@ -103,6 +123,10 @@ def test_modes_are_the_documented_four() -> None:
     assert set(PERMISSION_MODES) == {"default", "plan", "auto", "strict"}
     assert set(APPROVAL_MODES) == set(PERMISSION_MODES)
     assert HARDCODED_APPROVAL_TOOLS == frozenset({"run_code"})
+    # External side effects form their own always-confirm class (decided
+    # 2026-10-20): no mode -- auto included -- silently sends real messages.
+    assert ALWAYS_CONFIRM_TOOLS == frozenset({"send_email", "send_message"})
+    assert ALWAYS_CONFIRM_TOOLS.isdisjoint(HARDCODED_APPROVAL_TOOLS)
     assert new_state(target="windows", model="m").permission_mode == "default"
 
 
@@ -169,6 +193,42 @@ def test_run_code_never_bypassable_in_any_mode() -> None:
         assert state.pending_approval.tool_name == "run_code", mode
 
 
+def test_send_tools_confirm_in_every_mode() -> None:
+    """External sends are gated in default/plan/auto/strict alike -- ``auto``
+    may approve local compute but never a real outbound email or chat message
+    (ALWAYS_CONFIRM_TOOLS, decided 2026-10-20)."""
+
+    registry = make_registry()
+    for mode in PERMISSION_MODES:
+        for name, arguments in (
+            ("send_email", {"to": "a@example.com", "subject": "s", "body": "b"}),
+            ("send_message", {"channel": "telegram", "to": "me", "text": "hi"}),
+        ):
+            state = state_with_mode(mode)
+            result = registry.dispatch(state, call(name, arguments))
+            assert result is None, f"{mode}/{name} must park for confirmation"
+            assert state.pending_approval is not None, f"{mode}/{name}"
+            assert state.pending_approval.tool_name == name, f"{mode}/{name}"
+
+            # Approval resolution is the only way through (approved=True).
+            resolve_approval(state, registry, approved=True)
+            assert state.pending_approval is None, f"{mode}/{name}"
+            assert state.messages[-1].content.startswith("sent:"), f"{mode}/{name}"
+
+
+def test_send_tools_rejected_never_execute_in_auto() -> None:
+    """In ``auto`` (the mode that would otherwise have run them), an explicit
+    rejection leaves the external send unexecuted."""
+
+    registry = make_registry()
+    state = state_with_mode("auto")
+    registry.dispatch(state, call("send_email", {"to": "a@example.com", "subject": "s", "body": "b"}))
+    assert state.pending_approval is not None
+    resolve_approval(state, registry, approved=False)
+    assert state.pending_approval is None
+    assert all(not message.content.startswith("sent:") for message in state.messages)
+
+
 def test_rejection_never_executes_in_auto_mode() -> None:
     registry = make_registry()
     state = state_with_mode("auto")
@@ -221,6 +281,10 @@ def test_registry_json_marks_read_only_tools() -> None:
         assert by_name[name].get("read_only") is True, name
     for name in ("run_code", "create_docx", "create_pptx", "send_email", "send_message"):
         assert by_name[name].get("read_only", False) is False, name
+    # External side effects must carry requires_approval: true in the
+    # definition itself (the truth assumed by state=None callers).
+    for name in ("send_email", "send_message"):
+        assert by_name[name]["requires_approval"] is True, name
 
 
 if __name__ == "__main__":
