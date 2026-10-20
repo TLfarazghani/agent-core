@@ -131,8 +131,11 @@ def register_docgen_tools(
 def register_runcode_tool(
     registry: ToolRegistry,
     docker_client: Any | None = None,
+    **handler_kwargs: Any,
 ) -> ToolRegistry:
-    handlers = {"run_code": make_runcode_handler(client=docker_client)}
+    """Pass `handler_kwargs` through to the run_code handler (sandbox knobs:
+    mem_limit / nano_cpus / pids_limit / max_output_chars / read_only / cap_drop)."""
+    handlers = {"run_code": make_runcode_handler(client=docker_client, **handler_kwargs)}
     registry.load_json("tools/registry.json", handlers, names=RUNCODE_TOOLS)
     return registry
 

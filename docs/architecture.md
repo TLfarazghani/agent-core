@@ -84,7 +84,10 @@ agent-core/
     tasks.py               # Phase 11: task_create / task_update / task_list
     create_docx.py         # python-docx handler (Phase 2)
     create_pptx.py         # python-pptx handler (Phase 2)
-    run_code.py            # Docker sandbox handler, watchdog timeout (Phase 3)
+    run_code.py            # Docker sandbox handler, watchdog timeout (Phase 3); hardened:
+                           #   pids_limit 64, read_only + /tmp tmpfs, cap_drop ALL,
+                           #   security_opt no-new-privileges, 100k-char output cap,
+                           #   images pinned to manifest digests (_PINNED_DIGESTS)
   windows/                 # Windows transport (llama.cpp) — Phase 4
     server_config.ps1      # llama-server launch params
     orchestrator.py        # LlamaCppProvider: AgentState → OpenAI v3 request → ChatMessage
@@ -213,6 +216,24 @@ State-aware tool handlers are marked with `takes_state` and invoked as `handler(
 | create_docx | python-docx | Apache POI (heavy — reconsider for v1) | docx.js |
 | create_pptx | python-pptx | Apache POI (heavy — reconsider for v1) | pptxgenjs |
 | run_code | **Docker** (docker-py, `--network none` + limits) | **None** (delegate to Windows or omit) | **Pyodide** (tab-sandboxed) |
+
+### run_code Docker hardening (2026-10-20)
+
+The approval gate is the human control; the container itself now also carries defense-in-depth:
+
+| Limiter | docker-py kwarg | Default |
+|---|---|---|
+| Network isolation | `network_disabled=True` | on |
+| Memory | `mem_limit` | 256m |
+| CPU | `nano_cpus` | 0.5 CPU |
+| Process count (fork bombs) | `pids_limit` | 64 |
+| Root filesystem | `read_only=True` + `tmpfs={"/tmp": ""}` (scratch pages count against the memory cgroup) | on |
+| Capabilities | `cap_drop=["ALL"]`, `security_opt=["no-new-privileges:true"]` | on |
+| Timeout | watchdog thread kills the container | 30s |
+| Output | truncation at `max_output_chars` with a marker | 100 000 chars |
+| Supply chain | images pinned to manifest-list digests (`_PINNED_DIGESTS`, `default_images()`) rather than mutable tags | on |
+
+All knobs injectable via `make_handler(...)` / `{docker_client, **kwargs}` on `register_runcode_tool`; the fake-client tests assert the full kwarg set so no flag silently disappears. Live-verified against Docker 28.5.1: pinned digest runs, `/tmp` writable + `/usr` read-only (OSError), fork loop stopped by `pids_limit`, 300k print truncated at 100k chars.
 
 ## Model selection (research doc §2)
 

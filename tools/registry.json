@@ -14,7 +14,7 @@
   },
   {
     "name": "run_code",
-    "description": "Execute arbitrary code in a sandbox. Always requires human approval.",
+    "description": "Execute arbitrary code in a hardened Docker sandbox (network isolated, memory/CPU/PID limits, read-only filesystem with /tmp scratch, all capabilities dropped, digest-pinned images, output capped at 100k chars). Always requires human approval.",
     "requires_approval": true,
     "parameters": {
       "type": "object",

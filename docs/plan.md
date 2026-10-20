@@ -15,7 +15,7 @@ Full phased build plan for agent-core. Source: `local-agent-lfm25-research.md` (
 | Server | Prebuilt llama.cpp CUDA binary (`llama-b10456-bin-win-cuda-12.4-x64.zip`) — NOT built from source, NOT Ollama |
 | Parser | ast-based Pythonic extraction (`<|tool_call_start|>...<|tool_call_end|>`), no eval, no regex |
 | Approval gate | Hardcoded in `core/tool_registry.dispatch()`, never model-decided |
-| run_code sandbox | Windows: Docker (docker-py, `--network none` + limits); WebGPU: Pyodide; Android: none (platform ceiling) |
+| run_code sandbox | Windows: Docker (docker-py, `--network none` + limits; hardened 2026-10-20: PID limit, read-only root + `/tmp` tmpfs, `cap_drop=ALL`, no-new-privileges, output cap, digest-pinned images); WebGPU: Pyodide; Android: none (platform ceiling) |
 | First target | Windows — only platform where `run_code` has a real answer today |
 
 ## Environment facts (measured 2026-08-17)
@@ -110,6 +110,8 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 - [ ] Android: no sandbox — delegate to reachable Windows instance or omit; tracked as open platform-ceiling item
 
 **Gate:** `run_code` executes only after `resolve_approval(approved=True)`; sandbox limits enforced. **PASSED 2026-08-17** (8/8 unit + real Docker check).
+
+**Post-gate hardening (2026-10-20) — defense-in-depth on top of the approval gate.** The gate stays untouched (hardcoded, `resolve_approval(approved=True)` is still the only executor); the container got stronger: (1) `pids_limit=64` kills fork bombs cheaply; (2) `read_only=True` root filesystem + `tmpfs={"/tmp": ""}` scratch (tmpfs pages count against the memory cgroup — a tmpfs flood OOMs instead of filling the host disk); (3) `cap_drop=["ALL"]` + `security_opt=["no-new-privileges:true"]` (docker-py keyword `security_opt`, singular); (4) output capped at 100 000 chars with a truncation marker so a print bomb can't flood model context; (5) images pinned to **manifest-list digests** (`_PINNED_DIGESTS` / `default_images()` — fetched from registry-1.docker.io's `Docker-Content-Digest` header 2026-10-20 for `python:3.12-slim`, `node:20-slim`, `bash:5`) so retags can't swap bytes; overrides via `make_handler(images=…)` when a digest goes stale. Knobs injectable through `register_runcode_tool(**handler_kwargs)`. Tests: fake-client kwarg assertions for the full set (pids/read_only/tmpfs/cap_drop/security_opt/digest), cap truncation, tuning pass-through, and `read_only=False` dropping only the tmpfs. Live verification (Docker 28.5.1): digest-pinned run, `/tmp` writable + `/usr` read-only (OSError), fork loop blocked after a handful of children, 300k-char print truncated at 100 000 chars. Approval-gate behavior re-proven unchanged (park → approve executes; reject never runs).
 
 ## Phase 4 — Full cross-platform parity
 

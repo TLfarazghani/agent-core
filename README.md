@@ -88,6 +88,8 @@ The web UI + API are **local-only and not authenticated**. Concrete protections 
 - POST request bodies are capped at 10 MB (`AGENT_CORE_WEB_MAX_BODY` env override); oversize requests answer `413`.
 - `fetch_url`/`web_search` block private/loopback/link-local/metadata destinations after DNS resolution and re-check every redirect (SSRF guard; 1 MB per-hop download cap).
 - CLI and web approvals (`run_code`, writes, external sends) are always human-gated via `resolve_approval`; `auto` mode never auto-approves code execution or external sends.
+- **`run_code` sandbox hardening (2026-10-20):** the Docker container runs with no network, memory (256m), CPU (0.5), **PID limit (64 — fork bombs die fast)**, a **read-only root filesystem with a `/tmp` tmpfs** (scratch counts against the memory cgroup), **all capabilities dropped** + `no-new-privileges`, a watchdog timeout, a **100k-char output cap** (print bombs get truncated, not streamed), and images **pinned to manifest-list digests** (`tools/run_code.py _PINNED_DIGESTS`) instead of mutable tags.
+- Each sandbox knob is injectable (`register_runcode_tool(mem_limit=..., pids_limit=..., max_output_chars=..., read_only=..., cap_drop=...)`); the fake-client test suite asserts every flag so none silently disappears, and the approval gate (`resolve_approval(approved=True)`) remains the only executor.
 - Sessions and memory live at `%USERPROFILE%\.agent-core\` — same user scope as the rest of the app.
 
 ### File tools and secrets

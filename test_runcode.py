@@ -24,6 +24,7 @@ from core import (
     user_message,
 )
 from tools import register_runcode_tool
+import tools.run_code as tools_run_code
 
 
 class FakeContainer:
@@ -94,12 +95,83 @@ def test_sandbox_flags_are_applied() -> None:
     assert msg is not None and msg.role == "tool"
 
     image, kwargs = client.containers.run_kwargs[0]
-    assert image == "python:3.12-slim"
+    expected = tools_run_code.default_images()
+    # The image reference is a pinned digest, not the mutable tag.
+    assert image == expected["python"]
+    assert image.startswith("python@sha256:")
     assert kwargs["network_disabled"] is True
     assert kwargs["mem_limit"] == "256m"
     assert kwargs["nano_cpus"] == int(0.5 * 1e9)
+    assert kwargs["pids_limit"] == 64
+    assert kwargs["read_only"] is True
+    assert kwargs["tmpfs"] == {"/tmp": ""}
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
     assert kwargs["detach"] is True
     assert client.containers.containers[0].removed is True
+
+
+def test_sandbox_hardening_flags() -> None:
+    """The 2026-10-20 defense-in-depth knobs: PID limit, read-only root with
+    a /tmp scratch tmpfs, all capabilities dropped, no-new-privileges."""
+    client = FakeDockerClient()
+    registry = ToolRegistry()
+    register_runcode_tool(registry, docker_client=client)
+    registry.execute(_run_code_call())
+    image, kwargs = client.containers.run_kwargs[0]
+    assert image.startswith("python@sha256:")
+    assert kwargs["pids_limit"] == 64
+    assert kwargs["read_only"] is True
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
+    assert kwargs["tmpfs"] == {"/tmp": ""}
+
+
+def test_sandbox_limits_can_be_tuned() -> None:
+    """register_runcode_tool passes sandbox knobs through (mem/pids/output)."""
+    client = FakeDockerClient()
+    registry = ToolRegistry()
+    register_runcode_tool(
+        registry,
+        docker_client=client,
+        mem_limit="128m",
+        pids_limit=8,
+        max_output_chars=10,
+    )
+    registry.execute(_run_code_call(**{"timeout_seconds": 2}))
+    image, kwargs = client.containers.run_kwargs[0]
+    assert kwargs["mem_limit"] == "128m"
+    assert kwargs["pids_limit"] == 8
+
+
+def test_output_size_cap_truncates() -> None:
+    """A print bomb returns a bounded, truncated string, not megabytes."""
+    client = FakeDockerClient()
+    client.containers.next_logs = "x" * 300
+    registry = ToolRegistry()
+    register_runcode_tool(
+        registry, docker_client=client, max_output_chars=50, pids_limit=8
+    )
+    msg = registry.execute(_run_code_call())
+    # Fake-container sanity: the bomb really happened (300 chars were logged).
+    assert len(client.containers.containers[0].output) == 300
+    assert msg is not None
+    assert msg.content.startswith("x" * 50)
+    assert "output truncated at 50 chars" in msg.content
+    assert len(msg.content) < 100
+
+
+def test_read_only_can_be_disabled_explicitly() -> None:
+    """read_only=False drops the tmpfs scratch mount but keeps cap_drop."""
+    client = FakeDockerClient()
+    registry = ToolRegistry()
+    register_runcode_tool(registry, docker_client=client, read_only=False)
+    registry.execute(_run_code_call())
+    _, kwargs = client.containers.run_kwargs[0]
+    assert kwargs["read_only"] is False
+    assert kwargs["tmpfs"] is None
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
 
 
 def test_run_code_returns_output() -> None:
