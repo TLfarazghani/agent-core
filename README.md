@@ -17,7 +17,7 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 | Phase | Deliverable | Status |
 |---|---|---|
 | 0 | Core — AgentState + tool-call parser + registry + approval gate | **DONE** — gate passed |
-| 1 | Networked tools — email, messaging (uniform MCP-remote, opt-in) | **DONE** — gate passed |
+| 1 | Networked tools — email, messaging (uniform MCP-remote, opt-in) | **DONE** — gate passed; email upgraded to native SMTP in the default registry (2026-10-20), `send_message` still opt-in |
 | 1b | Local web search — `web_search` (DuckDuckGo / Google News / Wikipedia) + `fetch_url`, keyless | **DONE** — gate passed |
 | 2 | Local doc-gen — docx/pptx, 3 platform-specific backends | **DONE** — Windows backend shipped |
 | 3 | Code execution + sandbox — Docker / Pyodide, approval-gated | **DONE** — Windows Docker shipped; browser Pyodide written (needs live WebGPU verification) |
@@ -63,6 +63,20 @@ py -3.13 -m venv .venv
 .venv\Scripts\python test_smoke.py          # Phase 0 core checks
 .\windows\server_config.ps1                 # start llama-server
 ```
+
+## Email (`send_email`)
+
+Native SMTP in the default registry — every CLI/web session can send mail once configured (approval-gated like `run_code`/`write_file`):
+
+```powershell
+$env:AGENT_CORE_SMTP_HOST     = "smtp.gmail.com"
+$env:AGENT_CORE_SMTP_PORT     = "587"            # 465 -> implicit TLS
+$env:AGENT_CORE_SMTP_USER     = "you@gmail.com"
+$env:AGENT_CORE_SMTP_PASSWORD = "<app password>"  # Gmail: generate an App Password, never your login
+$env:AGENT_CORE_SMTP_FROM     = "you@gmail.com"   # optional, defaults to AGENT_CORE_SMTP_USER
+```
+
+Attachments resolve under `AGENT_CORE_FILE_ROOT`. Without `AGENT_CORE_SMTP_HOST` the tool reports it is unconfigured instead of failing silently. (Messaging — `send_message` — stays opt-in behind `MCP_BASE_URL`.)
 
 ## Key documents
 

@@ -57,8 +57,8 @@
   },
   {
     "name": "send_email",
-    "description": "Send an email message.",
-    "requires_approval": false,
+    "description": "Send an email via SMTP (config: AGENT_CORE_SMTP_HOST / _PORT / _USER / _PASSWORD / _FROM; attachments resolve under AGENT_CORE_FILE_ROOT). Always requires human approval.",
+    "requires_approval": true,
     "parameters": {
       "type": "object",
       "properties": {

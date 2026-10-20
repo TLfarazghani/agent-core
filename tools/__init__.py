@@ -2,8 +2,13 @@
 
 - ``register_web_tools`` — web_search (DuckDuckGo / Google News / Wikipedia) and
   fetch_url: real, keyless, stdlib-only web search (no MCP remote required).
-- ``register_networked_tools`` — Phase 1: send_email / send_message over the
-  shared MCP-remote client (web_search is now local via register_web_tools).
+- ``register_email_tools`` — send_email over native SMTP (stdlib smtplib/email;
+  injectable smtp_factory + settings seams). Default-registry email so sessions
+  without ``MCP_BASE_URL`` can still send (approval-gated).
+- ``register_networked_tools`` — Phase 1: send_message over the shared
+  MCP-remote client (web_search is now local via register_web_tools;
+  send_email is now local via register_email_tools and is skipped here when
+  already registered so MCP never duplicates it).
 - ``register_docgen_tools`` — Phase 2: create_docx / create_pptx local compute
   (Windows backend: python-docx / python-pptx).
 - ``register_runcode_tool`` — Phase 3: run_code Docker sandbox (approval-gated).
@@ -26,6 +31,7 @@ from .web_search import make_handler as make_websearch_handler
 from .web_search import make_fetch_handler as make_fetch_handler
 from .create_docx import make_handler as make_docx_handler
 from .create_pptx import make_handler as make_pptx_handler
+from .email import make_handler as make_email_handler
 from .run_code import make_handler as make_runcode_handler
 from .files import (
     make_edit_file_handler,
@@ -40,6 +46,7 @@ from .subagent import AGENT_TOOLS, register_subagent_tool
 from .tasks import TASK_TOOLS, register_task_tools
 
 WEB_TOOLS = {"web_search", "fetch_url"}
+EMAIL_TOOLS = {"send_email"}
 NETWORKED_TOOLS = {"send_email", "send_message"}
 DOCGEN_TOOLS = {"create_docx", "create_pptx"}
 RUNCODE_TOOLS = {"run_code"}
@@ -65,14 +72,41 @@ def register_web_tools(
     return registry
 
 
+def register_email_tools(
+    registry: ToolRegistry,
+    smtp_factory: Callable[..., Any] | None = None,
+    settings: Callable[[], dict[str, Any]] | None = None,
+) -> ToolRegistry:
+    """Native SMTP send_email: the default-registry email path.
+
+    Injectable ``smtp_factory`` (connection maker) and ``settings`` (config
+    reader) so tests never touch the network or the live environment --
+    same seam pattern as run_code's injectable docker client.
+    """
+    handlers = {"send_email": make_email_handler(smtp_factory=smtp_factory, settings=settings)}
+    registry.load_json("tools/registry.json", handlers, names=EMAIL_TOOLS)
+    return registry
+
+
 def register_networked_tools(
     registry: ToolRegistry,
     base_url: str,
     api_key: str | None = None,
 ) -> ToolRegistry:
+    """Phase 1 MCP-remote tools (send_message; send_email when not already registered).
+
+    Tools already registered (e.g. native SMTP send_email from
+    ``register_email_tools``) are skipped instead of raising ``duplicate tool
+    registration`` -- the local-first native path wins; set no
+    ``AGENT_CORE_SMTP_*`` env and rebuild the registry without email tools to
+    force the MCP transport.
+    """
+    remaining = {name for name in NETWORKED_TOOLS if registry.definition(name) is None}
+    if not remaining:
+        return registry
     client = McpClient(base_url=base_url, api_key=api_key)
-    handlers = {name: tool_handler(client, name) for name in NETWORKED_TOOLS}
-    registry.load_json("tools/registry.json", handlers, names=NETWORKED_TOOLS)
+    handlers = {name: tool_handler(client, name) for name in remaining}
+    registry.load_json("tools/registry.json", handlers, names=remaining)
     return registry
 
 

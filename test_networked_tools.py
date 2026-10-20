@@ -12,7 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from core import AgentState, ChatMessage, ToolCall, ToolRegistry, new_state
+from core import AgentState, ChatMessage, ToolCall, ToolRegistry, new_state, resolve_approval
 from tools import register_networked_tools
 
 REMOTE_TOOL_RESULTS = {
@@ -121,18 +121,28 @@ def test_web_search_no_longer_networked() -> None:
 
 
 def test_send_email_result() -> None:
+    """MCP-transport send_email is approval-gated like the native one."""
     server = MockMcpServer()
     server.start()
     try:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
-        msg = _dispatch(
-            registry,
-            "send_email",
-            {"to": "a@example.com", "subject": "hi", "body": "body", "attachments": ["x.pdf"]},
+        state = _new_state()
+        msg = registry.dispatch(
+            state,
+            ToolCall(id="call_0001", name="send_email",
+                     arguments={"to": "a@example.com", "subject": "hi", "body": "body", "attachments": ["x.pdf"]}),
         )
-        assert msg is not None and msg.role == "tool"
-        assert "email queued" in msg.content
+        assert msg is None  # parked at the approval gate
+        assert state.pending_approval.tool_name == "send_email"
+        assert len(server.state.calls) == 0  # nothing dispatched before approval
+        resolve_approval(state, registry, approved=True)
+        assert len(server.state.calls) == 1
+        assert server.state.calls[0]["params"]["arguments"] == {
+            "to": "a@example.com", "subject": "hi", "body": "body", "attachments": ["x.pdf"]
+        }
+        sent = state.messages[-1].content
+        assert "email queued" in sent
     finally:
         server.stop()
 

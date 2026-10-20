@@ -98,12 +98,15 @@ def test_to_openai_tools_wraps_definitions() -> None:
     assert "requires_approval" not in run_code
 
 
-def test_registry_includes_web_search_and_excludes_email() -> None:
+def test_registry_includes_web_search_and_email_but_not_messaging() -> None:
     registry: TR = default_registry()
     assert registry.definition("web_search") is not None
     assert registry.definition("fetch_url") is not None
-    # send_email/send_message remain opt-in networked (MCP_BASE_URL)
-    assert registry.definition("send_email") is None
+    # send_email is now native SMTP in the default registry (approval-gated);
+    # send_message remains opt-in networked (MCP_BASE_URL only).
+    email_def = registry.definition("send_email")
+    assert email_def is not None
+    assert email_def.requires_approval is True
     assert registry.definition("send_message") is None
 
 

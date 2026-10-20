@@ -71,9 +71,9 @@ agent-core/
     subagent.py            # Phase 10: bounded one-level sub-agent (spawn_subagent)
     tasks.py               # Phase 11: durable task backlog (create/update/list/render)
   tools/                   # real tool handlers
-    registry.json          # all tool definitions (echo, run_code, networked, doc-gen, cognitive, files, autonomy)
+    registry.json          # all tool definitions (echo, run_code, networked, email, doc-gen, cognitive, files, autonomy)
     remote.py              # McpClient — stdlib JSON-RPC MCP tools/call transport (portable)
-    __init__.py            # register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools / register_files_tools / register_skills_tools / register_task_tools / register_subagent_tool
+    __init__.py            # register_web_tools / register_email_tools / register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools / register_files_tools / register_skills_tools / register_task_tools / register_subagent_tool
     cognitive.py           # state-aware handlers: inspect_self / remember / recall / make_plan / update_plan
     files.py               # Phase 9: read_file / write_file / edit_file / list_dir / glob / grep (rooted)
     skills.py              # Phase 10: run_skill / list_skills (tool allowlist)

@@ -71,10 +71,12 @@ Approval flow (enforced in `core/loop.py` + `core/tool_registry.py`, not per-pla
 
 **Gate:** each networked tool dispatch returns schema-valid results with a mocked remote. **PASSED 2026-08-17** (6/6).
 
+**2026-10-20 addendum — native SMTP send_email.** Sessions launched without `MCP_BASE_URL` (the `Core-agent.bat` default) had no email tool at all, so the agent truthfully declined to send. `tools/email.py` adds a local-first SMTP `send_email` (stdlib `smtplib`/`email`, injectable `smtp_factory` + `settings` seams like run_code's docker client; config `AGENT_CORE_SMTP_HOST/_PORT/_USER/_PASSWORD/_FROM` read at call time; 465 → implicit TLS, else STARTTLS; attachments resolve under `AGENT_CORE_FILE_ROOT` via `files.resolve_path`). Now in `default_registry()` and `requires_approval: true` across both transports; `register_networked_tools` skips already-registered names so MCP never duplicates it (`send_message` remains MCP-only). Tests: `test_email.py` (13 self-contained cases, fake SMTP).
+
 ## Phase 1b — Local web search (keyless, no MCP remote) **PASSED 2026-08-18**
 
 - [x] `tools/web_search.py` — **local** `web_search(query, kind?, max_results?)` + `fetch_url(url, max_chars?)`: real, keyless, stdlib-only. `kind="web"` → DuckDuckGo HTML; `kind="news"` → Google News RSS; `kind="wikipedia"` → Wikipedia Search API. `fetch_url` returns a trimmed plain-text page extract. Injectable `urlopen` so tests never touch the network (mirrors run_code's injectable docker client)
-- [x] Registered in `default_registry()` on Windows (`web/server.py` + `cli.py`) — **no MCP_BASE_URL required**; `send_email`/`send_message` remain opt-in networked
+- [x] Registered in `default_registry()` on Windows (`web/server.py` + `cli.py`) — **no MCP_BASE_URL required**; see the 2026-10-20 addendum below (send_email moved native; send_message remains opt-in networked)
 - [x] Browser proxy: `web/server.py` `GET /api/search` + `GET /api/fetch` (avoids CORS), and `web/worker.js` in-browser `web_search`/`fetch_url` tools route through them
 - [x] Tests: `test_web_search.py` (8 tests, fake urlopen: DDG/News/Wikipedia parsing, fetch text extraction, arg validation) + 2 web-proxy tests in `test_web.py`. Live-verified 2026-08-18: real DDG results, real Google News headlines, real Wikipedia entries, real page fetch
 
