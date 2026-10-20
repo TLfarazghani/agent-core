@@ -42,6 +42,7 @@ import { runCommand } from "./commands.js";
 import { estimateTokens } from "./context.js";
 import { recallBounded, saveMemory as memorySave } from "./memory.js";
 import { makePlan as planMake, updatePlan as planUpdate } from "./planner.js";
+import { sessionUsage } from "./telemetry.js";
 import { activateSkill, loadSkills, renderSkills } from "./skills.js";
 import { spawnSubagent } from "./subagent.js";
 import { createTask, renderTasks, updateTask } from "./tasks.js";
@@ -169,6 +170,7 @@ const BROWSER_TOOLS = {
         tasks: state.tasks,
         tool_allowlist: state.tool_allowlist,
         active_subagents: state.active_subagents,
+        usage: sessionUsage(state), // Phase 12 telemetry summary (empty in-browser)
         tools: Object.keys(BROWSER_TOOLS).sort(),
       };
       return JSON.stringify(snapshot, null, 2);

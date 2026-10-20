@@ -9,6 +9,9 @@ const state = {
   pendingApproval: false,
   liveBubble: null,
   transport: "server",
+  /* Phase 12: the context budget for the sidebar usage readout. The server
+   * transport learns it from /api/health; in-browser uses the ONNX ctx. */
+  maxContextTokens: 32768,
 };
 
 let browserWorker = null;
@@ -33,6 +36,7 @@ const els = {
   reject: $("reject-btn"),
   transportServer: $("transport-server"),
   transportBrowser: $("transport-browser"),
+  usageLine: $("usage-line"),
 };
 
 /* ---------- HTTP helpers ---------- */
@@ -116,6 +120,7 @@ function renderMessages(agentState) {
     }
   }
   updateTurnCounter();
+  updateUsage(agentState);
 }
 
 function renderToolCard(call) {
@@ -173,6 +178,47 @@ function updateTurnCounter() {
   const s = state.agentState;
   els.turnCounter.textContent = s ? `turn ${s.turn_count}/${s.max_turns}` : "";
   if (s && s.permission_mode) els.permissionMode.value = s.permission_mode;
+}
+
+/* Phase 12: sidebar usage readout from the AgentState carried in `done` /
+ * command_result events. Uses the real server-reported prompt tokens of the
+ * last generation when present, else falls back to the chars/4 estimate
+ * (mirror of web/context.js estimateTokens — app.js is a classic script). */
+function estimateContextTokens(agentState) {
+  let total = 0;
+  for (const m of agentState.messages || []) {
+    let text = m.content || "";
+    for (const call of m.function_calls || []) {
+      text += (call.name || "") + JSON.stringify(call.arguments || {});
+    }
+    text += m.tool_call_id || "";
+    total += Math.max(1, Math.ceil(text.length / 4));
+  }
+  return total;
+}
+
+function updateUsage(agentState) {
+  if (!agentState) {
+    els.usageLine.textContent = "";
+    return;
+  }
+  const budget = state.maxContextTokens || 32768;
+  const records = Array.isArray(agentState.usage) ? agentState.usage : [];
+  const last = records.length ? records[records.length - 1] : null;
+  const totalTokens = records.reduce((acc, r) => acc + Math.max(0, r.total_tokens || 0), 0);
+  const parts = [];
+  if (last && last.prompt_tokens) {
+    parts.push(`ctx ${Math.max(0, last.prompt_tokens).toLocaleString("en-US")}/${budget.toLocaleString("en-US")}`);
+  } else {
+    parts.push(`ctx ~${estimateContextTokens(agentState).toLocaleString("en-US")}/${budget.toLocaleString("en-US")}`);
+  }
+  if (last && last.latency_s > 0 && last.completion_tokens) {
+    parts.push(`${Math.round(last.completion_tokens / last.latency_s)} tok/s`);
+  }
+  if (totalTokens) {
+    parts.push(`${totalTokens.toLocaleString("en-US")} tok session`);
+  }
+  els.usageLine.textContent = parts.join(" \u00b7 ");
 }
 
 /* ---------- UI state ---------- */
@@ -294,6 +340,7 @@ function setTransport(t) {
     els.modelStatus.textContent = "\u25c9 in-browser \u00b7 loading model\u2026";
     els.modelStatus.className = "busy";
     els.sessionList.innerHTML = "<li>in-browser session (not persisted)</li>";
+    state.maxContextTokens = 32768; // ONNX_CONTEXT_TOKENS (mirrors web/worker.js)
   }
 }
 
@@ -504,6 +551,8 @@ async function approveAction(approved) {
 async function refreshHealth() {
   try {
     const h = await fetchJSON("/api/health");
+    /* Phase 12: the budget the readout compares server-reported tokens to. */
+    if (Number.isFinite(h.max_context_tokens)) state.maxContextTokens = h.max_context_tokens;
     const dot = els.modelStatus.querySelector(".dot");
     dot.className = "dot " + (h.ok ? "dot-on" : "dot-off");
     els.modelStatus.appendChild(document.createTextNode(" " + (h.ok ? "local \u00b7 online" : "local \u00b7 model OFFLINE")));

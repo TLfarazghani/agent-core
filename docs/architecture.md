@@ -67,6 +67,7 @@ agent-core/
     planner.py             # make_plan / update_plan on AgentState.plan
     reflection.py          # lessons + Phase 11 automatic memory extraction (extract_memories)
     commands.py            # Phase 8: shared slash-command table (CLI + web consume it)
+    telemetry.py           # Phase 12: usage records (TurnUsage on AgentState.usage) + /doctor probes
     subagent.py            # Phase 10: bounded one-level sub-agent (spawn_subagent)
     tasks.py               # Phase 11: durable task backlog (create/update/list/render)
   tools/                   # real tool handlers
@@ -99,6 +100,7 @@ agent-core/
   web/subagent.js          # Phase 10 JS port of core/subagent.py
   web/skills.js            # Phase 10 JS port of tools/skills.py
   web/tasks.js             # Phase 11 JS port of core/tasks.py
+  web/telemetry.js         # Phase 12 JS port of core/telemetry.py (usage summary + /cost text)
   web/worker.js            # module worker: Transformers.js + Pyodide + browser tools
   core/sessions.py         # shared session lifecycle: system prompt, save/load/list/delete
   android/                 # planned port — structure reserved
@@ -117,6 +119,7 @@ agent-core/
   test_subagent.py         # Phase 10 (bounded sub-agents, approval bubbling, one-level)
   test_skills.py           # Phase 10 (tool allowlist; gate still applies)
   test_tasks.py            # Phase 11 (task backlog + session persistence)
+  test_telemetry.py        # Phase 12 (usage records, /cost formatting, doctor probes — all faked)
   requirements.txt         # pydantic, jsonschema, python-docx, python-pptx, docker, openai
   docs/                    # this documentation set
   models/                  # GGUF weights (gitignored)
@@ -195,6 +198,7 @@ State-aware tool handlers are marked with `takes_state` and invoked as `handler(
 - **Compaction:** `core/context.compact_to_budget` replaces whole dropped turns with one `"Summary of earlier conversation:"` system message via one extra generate; opt-in in `LlamaCppProvider` (`AGENT_CORE_COMPACT=1`). `trim_to_budget` still guarantees the live turn is kept and tool/assistant pairs never split.
 - **Memory extraction:** `core/reflection.extract_memories` proposes deduped `fact`/`preference` memories each terminal turn (heuristic, exception-safe, bounded) — extending Phase 5's lesson-only reflection.
 - **Tasks:** `core/tasks.py` + `AgentState.tasks` is a durable backlog distinct from `plan`, managed by `task_create`/`task_update`/`task_list` and `/tasks`, serialized with the session.
+- **Observability (Phase 12):** `core/telemetry.py` records one `TurnUsage` into `AgentState.usage` per provider generate (`record_usage`, called by `LlamaCppProvider` with the server-reported tokens it already captures) and `session_usage(state)` folds it for `/cost` (tokens-only — local inference is never metered) and the `#usage-line` sidebar readout; `/doctor` probes llama-server `/health`, the `/v1/models` model/ctx match vs `EXPECTED_CTX_BY_MODEL`, Docker for `run_code`, and session/memory dir writability, with every probe injectable so tests run without a live server. `inspect_self` reports the usage summary too. Pure logic mirrors to `web/telemetry.js`; `/doctor` is host-only in the browser.
 
 ## Sandbox decisions (Phase 3)
 

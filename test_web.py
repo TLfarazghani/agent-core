@@ -57,9 +57,16 @@ def _build_registry() -> tuple[ToolRegistry, FakeDocker]:
 
 
 class _TestServer:
-    def __init__(self) -> None:
+    def __init__(self, doctor_probes: dict | None = None) -> None:
         self.registry, _ = _build_registry()
-        self.server = make_server(AgentApp(registry=self.registry, health_check=lambda: True), 0)
+        self.server = make_server(
+            AgentApp(
+                registry=self.registry,
+                health_check=lambda: True,
+                doctor_probes=doctor_probes,  # Phase 12: None = real probes
+            ),
+            0,
+        )
         self.server.block_on_close = True
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -625,12 +632,72 @@ def test_command_endpoint_runs_shared_registry() -> None:
         server.stop()
 
 
+def test_phase12_cost_and_doctor_via_command_endpoint() -> None:
+    """/cost and /doctor ride the shared command endpoint; /doctor uses the
+    app-level probe overrides so the test never touches the real network."""
+    probes = {
+        "llama_server": lambda: {"ok": True, "detail": "GET /health -> 200 (fake)"},
+        "model_match": lambda: {"ok": True, "detail": "server serves the same model (fake)"},
+        "docker": lambda: {"ok": True, "detail": "Docker daemon reachable (fake)"},
+    }
+    server = _TestServer(doctor_probes=probes)
+    try:
+        health = server.get("/api/health")
+        assert health["ok"] is True
+        assert health["max_context_tokens"] > 0  # sidebar readout budget
+
+        session_id = _create_session(server)
+        result = _command(server, session_id, "/cost")
+        assert result["error"] is False
+        assert "No usage recorded yet" in result["text"]
+
+        doctor = _command(server, session_id, "/doctor")
+        assert doctor["error"] is False
+        assert "ALL CHECKS PASSED" in doctor["text"]
+        assert "llama_server" in doctor["text"] and "docker" in doctor["text"]
+
+        failing = _TestServer(
+            doctor_probes={
+                "llama_server": lambda: {"ok": True, "detail": "GET /health -> 200 (fake)"},
+                "model_match": lambda: {"ok": True, "detail": "same model (fake)"},
+                "context_budget": lambda: {"ok": True, "detail": "matches the table (fake)"},
+                "docker": lambda: {"ok": False, "detail": "daemon down", "hint": "start Docker Desktop"},
+            }
+        )
+        try:
+            session_id = _create_session(failing)
+            result = _command(failing, session_id, "/doctor")
+            assert "FAIL" in result["text"]
+            assert "Overall: 1 problem(s) found" in result["text"]
+            assert "start Docker Desktop" in result["text"]
+        finally:
+            failing.stop()
+    finally:
+        server.stop()
+
+
+def _command(server: _TestServer, session_id: str, text: str) -> dict:
+    def do():
+        request = urllib.request.Request(
+            server.url(f"/api/sessions/{session_id}/command"),
+            data=json.dumps({"command": text}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    return _retry_transport(do)
+
+
 def test_commands_listed() -> None:
     server = _TestServer()
     try:
         payload = server.get("/api/commands")
         names = {entry["name"] for entry in payload["commands"]}
         assert {"/help", "/mode", "/tools", "/approve", "/reject", "/tasks"} <= names
+        # Phase 12 observability surface rides the shared registry.
+        assert {"/cost", "/doctor", "/context"} <= names
         assert "/help" in payload["help"]
     finally:
         server.stop()

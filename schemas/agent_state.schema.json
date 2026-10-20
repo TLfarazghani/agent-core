@@ -102,6 +102,21 @@
       "default": null,
       "items": { "type": "string" },
       "description": "Phase 10: when set, dispatch denies tools not in this list (a skill's allowlist). Not an approval bypass."
+    },
+    "usage": {
+      "type": "array",
+      "default": [],
+      "description": "Phase 12 telemetry: one record per provider generate (server-reported prompt/completion tokens + generation latency). Feeds /cost, /context, and the web sidebar usage readout.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "prompt_tokens": { "type": "integer", "minimum": 0 },
+          "completion_tokens": { "type": "integer", "minimum": 0 },
+          "total_tokens": { "type": "integer", "minimum": 0 },
+          "latency_s": { "type": "number", "minimum": 0 },
+          "at": { "type": "number" }
+        }
+      }
     }
   }
 }

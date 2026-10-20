@@ -69,6 +69,7 @@ from .state import (
     Task,
     ToolCall,
     ToolDefinition,
+    TurnUsage,
 )
 from .subagent import (
     MAX_CONCURRENT_SUBAGENTS,
@@ -77,6 +78,15 @@ from .subagent import (
     spawn_subagent,
 )
 from .tasks import create_task, list_tasks, render_tasks, update_task
+from .telemetry import (
+    DEFAULT_SERVER_URL,
+    EXPECTED_CTX_BY_MODEL,
+    format_cost,
+    format_doctor,
+    record_usage,
+    run_doctor,
+    session_usage,
+)
 from .tool_registry import APPROVAL_MODES, HARDCODED_APPROVAL_TOOLS, ToolRegistry, takes_state
 
 __all__ = [
@@ -89,6 +99,8 @@ __all__ = [
     "CommandContext",
     "CommandResult",
     "DEFAULT_PERMISSION_MODE",
+    "DEFAULT_SERVER_URL",
+    "EXPECTED_CTX_BY_MODEL",
     "GenerateProvider",
     "HARDCODED_APPROVAL_TOOLS",
     "KINDS",
@@ -109,6 +121,7 @@ __all__ = [
     "ToolCall",
     "ToolDefinition",
     "ToolRegistry",
+    "TurnUsage",
     "agent_bio",
     "command_names",
     "compact_to_budget",
@@ -119,6 +132,8 @@ __all__ = [
     "extract_blocks",
     "extract_memories",
     "finalize_turn",
+    "format_cost",
+    "format_doctor",
     "has_tool_call_blocks",
     "help_text",
     "inspect_self",
@@ -138,11 +153,14 @@ __all__ = [
     "planner_update_plan",
     "recall_bounded",
     "recall_memories",
+    "record_usage",
     "render_tasks",
     "resolve_approval",
     "run",
     "run_command",
+    "run_doctor",
     "save_memory",
+    "session_usage",
     "should_compact",
     "should_stop_after_retries",
     "spawn_subagent",

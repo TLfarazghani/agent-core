@@ -86,6 +86,26 @@ class Task(BaseModel):
     result: Optional[str] = None
 
 
+class TurnUsage(BaseModel):
+    """One provider-generate's telemetry record (Phase 12).
+
+    Filled from the server-reported usage providers already capture
+    (llama.cpp's ``usage`` with ``stream_options.include_usage``) plus the
+    generation latency. ``at`` is unix epoch seconds so sessions can be
+    plotted later. Records serialize with the session and feed ``/cost``,
+    ``/context``, and the web sidebar readout; ``core/telemetry.py`` folds
+    them into summaries.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    latency_s: float = 0.0
+    at: float = 0.0
+
+
 class AgentState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,3 +123,4 @@ class AgentState(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
     active_subagents: int = 0
     tool_allowlist: Optional[list[str]] = None
+    usage: list["TurnUsage"] = Field(default_factory=list)

@@ -12,7 +12,7 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 
 ## Status
 
-**Completed (gates passed):** phases 0, 1, 1b, 2, 3, 5, 6, 7, **8** — Windows path. Phase 4 shipped on Windows; its Android port and in-browser WebGPU model are still pending, and Phase 6b compaction is not built. **Remaining:** phases 9–12 — planned, no code yet.
+**Completed (gates passed):** phases 0, 1, 1b, 2, 3, 5, 6, 7, **8, 9, 10, 11, 12** — Windows path. Phase 4 shipped on Windows; its Android port and in-browser WebGPU model are still pending (Phase 6b compaction ships opt-in via `AGENT_CORE_COMPACT=1`, unverified against a live model).
 
 | Phase | Deliverable | Status |
 |---|---|---|
@@ -29,11 +29,11 @@ The agent loop, tool registry, state machine, and approval gate are transport-ag
 | 9 | File & code-intelligence tools — read/write/edit/glob/grep, write/edit approval-gated | **DONE** — `tools/files.py` rooted at `AGENT_CORE_FILE_ROOT`; browser mirrors via `POST /api/file` |
 | 10 | Sub-agents (bounded) & skills (tool-allowlisted) | **DONE** — `core/subagent.py` + `tools/subagent.py` (`agent`, one level deep) and `tools/skills.py` + `skills/` (`run_skill`/`list_skills`); JS parity `web/subagent.js`/`web/skills.js` |
 | 11 | Context compaction + automatic memory extraction + tasks | **DONE** — `core/context.py` compaction (opt-in `AGENT_CORE_COMPACT=1`), `core/reflection.extract_memories`, `core/tasks.py` + `task_*`/`/tasks`; JS parity `web/tasks.js` |
-| 12 | Observability — per-session cost/context + `doctor` self-diagnostics | **PLANNED** |
+| 12 | Observability — per-session cost/context + `doctor` self-diagnostics | **DONE** — `core/telemetry.py` (`record_usage` → `AgentState.usage` serializes with the session; `session_usage`/`format_cost`) + `/cost` + enhanced `/context` + `/doctor` (probes llama-server `/health`, `/v1/models` model/ctx match, Docker, dir writability — all injectable); JS parity `web/telemetry.js`, sidebar usage readout |
 
 Phases 8–12 are an architectural review of the leaked Claude Code source (`codeaashu/claude-code`) — **patterns only, no source copied**; see `docs/plan.md`.
 
-Test suites (verified 2026-10-19): **262 pass** — **218** via `.venv\Scripts\python -m pytest`; **40** engine+context+Phase-8/9/10/11 parity via `node test_webgpu_engine.mjs`; **4** parser parity via `.venv\Scripts\python test_parser_js.py`. Previously verified live on llama-server (Phase 4 gate, ~215 tok/s 1.2B; 2.6B ~110 tok/s; 8B-A1B ~150 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
+Test suites (verified 2026-10-20 after Phase 12): **297 pass** — **248** via `.venv\Scripts\python -m pytest`; **45** engine+context+Phase-8/9/10/11/12 parity via `node test_webgpu_engine.mjs`; **4** parser parity via `.venv\Scripts\python test_parser_js.py`. Previously verified live on llama-server (Phase 4 gate, ~215 tok/s 1.2B; 2.6B ~110 tok/s; 8B-A1B ~150 tok/s) and against live DuckDuckGo / Google News / Wikipedia.
 
 Build order is forced by dependency: Phase 3 (code execution) dispatches through the same loop Phase 0 builds.
 

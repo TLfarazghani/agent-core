@@ -10,10 +10,19 @@
  * Commands never bypass the approval gate: /approve and /reject call
  * engine.resolveApproval, which is the only path that executes a parked call.
  * /mode changes state.permission_mode, enforced in web/engine.js.
+ *
+ * Divergences from the Python table (documented ceilings, the same pattern as
+ * the missing /resume //approve //reject //quit):
+ *   /doctor — host-only: it probes the machine's llama-server, Docker
+ *             daemon, and directories; a browser tab cannot see those. On
+ *             the "local" transport the composer routes /doctor through
+ *             POST /api/sessions/<id>/command, so it still works in the web
+ *             UI against the Python side.
  */
 
 import { estimateTokens } from "./context.js";
 import { recallBounded } from "./memory.js";
+import { formatCost, sessionUsage } from "./telemetry.js";
 import { VALID_TASK_STATUSES, createTask, renderTasks, updateTask } from "./tasks.js";
 
 const AGENT_NAME = "Agent Core";
@@ -95,15 +104,29 @@ const COMMANDS = {
       const used = estimateTokens(state.messages);
       const budget = (ctx && ctx.max_context_tokens) || 32768;
       const pct = budget ? ((used / budget) * 100).toFixed(1) : "0.0";
-      return result(
+      const lines = [
         `Context: ~${used} tokens / ${budget} (${pct}%)\n` +
           `Messages: ${state.messages.length}  turns: ${state.turn_count}/${state.max_turns}  ` +
-          `mode: ${state.permission_mode}`
-      );
+          `mode: ${state.permission_mode}`,
+      ];
+      /* Phase 12: real usage line when the host recorded server-reported tokens. */
+      const report = sessionUsage(state);
+      if (report.turns) {
+        lines.push(
+          `Real usage (server-reported): session total ${report.total_tokens} tokens` +
+            ` (${report.completion_tokens} completion @ ${report.tokens_per_second.toFixed(1)} tok/s)`
+        );
+      }
+      return result(lines.join("\n"));
     },
   },
-  "/plan": {
-    name: "/plan",
+  "/cost": {
+    name: "/cost",
+    description: "session token usage (local: $0)",
+    usage: "/cost",
+    run: (state) => result(formatCost(sessionUsage(state))),
+  },
+  "/plan": {    name: "/plan",
     description: "render the current plan",
     usage: "/plan",
     run: (state) => {

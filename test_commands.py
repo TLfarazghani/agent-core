@@ -130,6 +130,74 @@ def test_status_and_context_report_live_values() -> None:
     assert "mode: default" in context
 
 
+def test_cost_reports_session_tokens() -> None:
+    """Phase 12: /cost folds state.usage (server-reported tokens)."""
+    from core.telemetry import record_usage
+
+    ctx = make_ctx()
+    empty = run_command(ctx, "/cost")
+    assert empty.error is False
+    assert "No usage recorded yet" in empty.text
+
+    record_usage(
+        ctx.state,
+        {"prompt_tokens": 2014, "completion_tokens": 412, "total_tokens": 2426},
+        latency_s=None,
+    )
+    populated = run_command(ctx, "/cost")
+    assert "2,426" in populated.text
+    assert "$0.00" in populated.text and "local" in populated.text
+    assert "/cost" in run_command(ctx, "/help").text
+
+
+def test_context_shows_real_usage_line() -> None:
+    ctx = make_ctx(max_context_tokens=4096)
+    base = run_command(ctx, "/context").text
+    assert "Real usage" not in base
+    from core.telemetry import record_usage
+
+    record_usage(ctx.state, {"prompt_tokens": 512, "completion_tokens": 64, "total_tokens": 576}, 0.8)
+    with_usage = run_command(ctx, "/context").text
+    assert "Real usage (server-reported)" in with_usage
+    assert "576" in with_usage and "tok/s" in with_usage
+
+
+def test_doctor_with_injected_probes() -> None:
+    """Phase 12: /doctor runs the injectable checks — no network, no Docker.
+
+    The real dir-writability probes still run, pointed at tempdirs.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        from core.telemetry import check_dir_writable
+
+        ctx = make_ctx(
+            doctor_probes={
+                "llama_server": lambda: {"ok": True, "detail": "GET /health -> 200"},
+                "model_match": lambda: {"ok": True, "detail": "same model"},
+                "docker": lambda: {"ok": True, "detail": "daemon reachable"},
+                "session_dir": lambda: check_dir_writable(Path(tmp)),
+                "memory_dir": lambda: check_dir_writable(Path(tmp)),
+            },
+            session_dir=Path(tmp),
+            memory_dir=Path(tmp),
+        )
+        ok = run_command(ctx, "/doctor")
+    assert ok.error is False
+    assert "ALL CHECKS PASSED" in ok.text
+    assert "llama_server" in ok.text and "session_dir" in ok.text
+
+
+def test_doctor_reports_failures() -> None:
+    ctx = make_ctx(doctor_probes={
+        "llama_server": lambda: {"ok": False, "detail": "llama-server unreachable", "hint": "start server"},
+        "model_match": lambda: {"ok": True, "detail": "same model"},
+        "docker": lambda: {"ok": False, "detail": "docker CLI not found"},
+    })
+    bad = run_command(ctx, "/doctor")
+    assert "FAIL" in bad.text and "Overall: 2 problem(s) found" in bad.text
+    assert "hint: start server" in bad.text
+
+
 def test_plan_renders_steps() -> None:
     from core import planner_make_plan
 

@@ -61,6 +61,7 @@ from core import (
     should_stop_after_retries,
     user_message,
 )
+from core.telemetry import DEFAULT_SERVER_URL  # noqa: F401  (re-exported)
 from core.loop import MaxTurnsError, resolve_approval, step
 from core.sessions import (
     delete_all_sessions,
@@ -147,6 +148,7 @@ class AgentApp:
         registry: ToolRegistry | None = None,
         provider_factory: ProviderFactory | None = None,
         health_check: Callable[[], bool] | None = None,
+        doctor_probes: dict[str, Callable[[], dict]] | None = None,
     ) -> None:
         self.registry = registry or default_registry()
         mcp_base = os.environ.get("MCP_BASE_URL")
@@ -165,6 +167,8 @@ class AgentApp:
         )
         self.health_check = health_check or default_health_check
         self.max_context_tokens = default_max_context_tokens()
+        # Phase 12: optional /doctor probe overrides (test seam); None = real probes.
+        self.doctor_probes = doctor_probes
         self._sessions: dict[str, AgentState] = {}
         self._locks: dict[str, threading.Lock] = {}
         self._lock_guard = threading.Lock()
@@ -233,6 +237,8 @@ class AgentApp:
                 state=state,
                 registry=self.registry,
                 max_context_tokens=self.max_context_tokens,
+                server_base_url=DEFAULT_BASE_URL,
+                doctor_probes=self.doctor_probes,
             ),
             line,
         )
@@ -504,7 +510,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_api_get(self, app: AgentApp, path: str) -> None:
         if path == "/api/health":
-            return self._send_json(200, {"ok": app.health(), "base_url": DEFAULT_BASE_URL})
+            return self._send_json(
+                200,
+                {
+                    "ok": app.health(),
+                    "base_url": DEFAULT_BASE_URL,
+                    # Phase 12: the sidebar readout shows tokens vs this budget.
+                    "max_context_tokens": app.max_context_tokens,
+                },
+            )
         if path == "/api/search":
             params = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
             args = {

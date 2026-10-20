@@ -67,6 +67,10 @@ function newState({ session_id, model, max_turns = 8, permission_mode = "default
     tool_allowlist: null,
     active_subagents: 0,
     tasks: [],
+    /* Phase 12 telemetry: one record per generate. The browser provider
+     * (Transformers.js) does not surface token counts, so this stays empty on
+     * the webgpu target; the host records real numbers. */
+    usage: [],
     permission_mode: PERMISSION_MODES.includes(permission_mode) ? permission_mode : "default",
   };
 }

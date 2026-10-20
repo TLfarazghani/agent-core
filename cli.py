@@ -244,6 +244,7 @@ def main() -> int:
                     registry=registry,
                     max_context_tokens=provider.max_context_tokens,
                     session_dir=SESSION_DIR,
+                    server_base_url=provider.base_url,
                 ),
                 line,
             )

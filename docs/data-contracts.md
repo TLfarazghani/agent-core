@@ -79,7 +79,8 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
   "plan": null,
   "tasks": [],
   "active_subagents": 0,
-  "tool_allowlist": null
+  "tool_allowlist": null,
+  "usage": []
 }
 ```
 
@@ -99,6 +100,7 @@ Source: `schemas/agent_state.schema.json`. The Core owns this; platforms never m
 | `tasks` | array of Task | Phase 11 durable backlog, distinct from `plan`: `[{ "id": "task_N", "description", "status": "pending\|in_progress\|done\|failed\|skipped", "result" }]`. Serialized with the session. Managed by `task_create`/`task_update`/`task_list` and `/tasks` |
 | `active_subagents` | int | Phase 10; number of sub-agents currently running. The child is seeded with `MAX_CONCURRENT_SUBAGENTS` (1) so a nested `agent` call is refused — one level deep |
 | `tool_allowlist` | array of string \| null | Phase 10; when set (by `run_skill`) `tool_registry.dispatch()` denies any tool not in the list. Cleared at the next user turn. A **restriction, not an approval bypass** — allowed calls still hit the gate |
+| `usage` | array of TurnUsage | Phase 12 telemetry; one record per provider generate: `{ "prompt_tokens", "completion_tokens", "total_tokens", "latency_s", "at" }` (server-reported tokens + generation latency, `at` = unix epoch seconds). Recorded by the provider after each generate (`core.telemetry.record_usage`), serialized with the session, folded into summaries by `core.telemetry.session_usage(state)`, and rendered by `/cost` (tokens only — local inference is never metered) and the web sidebar readout |
 
 `pending_approval` is enforced in code: `loop.step()` refuses to run until `resolve_approval()` clears it. It is never a convention. `pending_calls` exists so multi-call turns like `[run_code, echo]` don't silently drop the calls after the approval-gated one. Plan steps are bookkeeping only — every step that calls a tool still hits the hardcoded approval gate independently; there is **no plan-based approval bypass**.
 
@@ -192,6 +194,32 @@ Memory entry record: `{ "key", "content", "kind", "created_at", "source_session"
 { "name": "task_list", "parameters": {} }
 ```
 A skill is a JSON file `{ "name", "description", "prompt", "tools"? }` under `skills/`; `run_skill` sets `tool_allowlist` and injects the prompt — the allowlist is a **denial in `dispatch()`, never an approval bypass**. `agent` runs a bounded nested loop (`MAX_SUBAGENT_TURNS=4`, one level deep, one at a time); a gated tool inside the sub-agent bubbles to this session's `pending_approval`. Tasks persist in `AgentState.tasks` and are managed by `task_*` / `/tasks`. The browser mirror exposes skills via `GET /api/skills` and mirrors the allowlist denial in `web/engine.js`.
+
+## Observability (Phase 12)
+
+`core/telemetry.py` is stdlib-only and local-only (nothing is collected, nothing phones home). The provider records one **TurnUsage** per generate into `AgentState.usage` — `record_usage(state, usage, latency_s)` where `usage` is the server-reported OpenAI usage object/dict the provider already captures (`stream_options.include_usage`):
+
+```json
+{
+  "prompt_tokens": 1234,
+  "completion_tokens": 567,
+  "total_tokens": 1801,
+  "latency_s": 3.4,
+  "at": 1792460000.0
+}
+```
+
+| Field | Type | Rules |
+|---|---|---|
+| `prompt_tokens` | int | server-reported prompt tokens for that generate (0 when the server does not report) |
+| `completion_tokens` | int | server-reported completion tokens |
+| `total_tokens` | int | server-reported total; `session_usage()` falls back to `prompt + completion` when a provider skips it |
+| `latency_s` | float | generate wall time in seconds (feeds per-turn tok/s) |
+| `at` | float | unix epoch seconds at call completion |
+
+`session_usage(state)` folds the records into `{turns, prompt_tokens, completion_tokens, total_tokens, generate_seconds, tokens_per_second, last_tokens_per_second}` — the same numbers `docs/benchmarks.md` measures. Records serialize with the session (survive CLI ↔ web resumes). `/cost` renders the summary (tokens-only, always `$0.00` — local inference is never metered); `/context` adds a "Real usage (server-reported)" line beside the chars/4 estimate; `inspect_self` includes the summary. Pure summary/format logic mirrors to `web/telemetry.js` (`sessionUsage`/`formatTokens`/`formatCost`, byte-identical text).
+
+`/doctor` (`run_doctor` / `format_doctor`) is host-only: llama-server `/health`, `/v1/models` first id vs `AgentState.model`, client `max_context_tokens` vs `EXPECTED_CTX_BY_MODEL` (the per-model `--ctx-size` table), Docker for `run_code` (`docker info`), and session/memory dir writability. Every probe is **injectable** (`urlopen=` / `probe=` / `CommandContext.doctor_probes`) so tests run with fake servers and daemons — a probe failure is reported as an `ok: false` check, never raised. In the browser the web UI runs `/doctor` server-side through `POST /api/sessions/<id>/command`.
 
 ## Enforcement
 

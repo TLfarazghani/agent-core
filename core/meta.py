@@ -13,6 +13,7 @@ import json
 import time
 
 from .context import estimate_tokens
+from .telemetry import session_usage
 
 AGENT_NAME = "Agent Core"
 DEFAULT_CONTEXT_TOKENS = 32768
@@ -70,6 +71,7 @@ def inspect_self(
         ),
         "plan": state.plan.model_dump() if state.plan else None,
         "permission_mode": getattr(state, "permission_mode", "default"),
+        "usage": session_usage(state),
         "tools": sorted(d.name for d in registry.definitions()),
     }
     return json.dumps(snapshot, indent=2)

@@ -74,7 +74,9 @@ All commands come from the shared table in `core/commands.py` (Phase 8), so the 
 | `/tools` | List registered tools (name, description, `approval`/`read-only` flags) |
 | `/status` | Live self snapshot (`inspect_self`) |
 | `/tasks` | Show the task backlog (`/tasks add <text>`, `/tasks task_N <status>`) |
-| `/context` | Token budget usage + current mode |
+| `/context` | Token budget usage + current mode; adds the real server-reported usage line when telemetry has records (Phase 12) |
+| `/cost` | Session token usage: server-reported tokens, generation time, mean/last-turn tok/s — tokens only, local inference is `$0.00` |
+| `/doctor` | Self-diagnostics: llama-server `/health`, `/v1/models` model/ctx match, Docker for `run_code`, session/memory dir writability |
 | `/plan` | Render `AgentState.plan` |
 | `/memory [topic]` | Recall long-term memory |
 | `/approve` / `/reject` | Resolve the current pending approval |
@@ -155,6 +157,8 @@ All commands come from the shared table in `core/commands.py` (Phase 8), so the 
 - **Turn budget vs plan length:** each plan step is bookkeeping only. A step that calls a tool still hits the hardcoded approval gate independently (no plan-based approval bypass), and every generate+execute cycle consumes a turn — so a plan longer than `max_turns` will be interrupted by the turn cap and must be resumed in a new session. UIs surface `turn_count/max_turns` so a long plan's progress is visible before the cap hits.
 
 **Task backlog (Phase 11):** `AgentState.tasks` is a durable backlog distinct from `plan`. Both UIs render it as rows of `task_N` + description + status; the CLI prints it via `render_tasks` alongside the plan, and the web UI renders it in `renderMessages` / the sidebar. `/tasks` (and `task_create`/`task_update`/`task_list`) mutate it, and it serializes with the session so it survives resume. A sub-agent (`agent` tool) is invisible to the user except for its tool cards; a gated tool it needs surfaces as a normal approval on the parent session. A skill (`run_skill`) narrows the tool set — the UI shows which tools are currently allowed while a skill is active.
+
+**Usage readout (Phase 12):** the web sidebar carries a one-line telemetry readout (`#usage-line`, above the model status): server-reported context tokens vs the session budget (the budget arrives from `/api/health`'s `max_context_tokens`), last-turn completion tok/s, and total session tokens — all from `AgentState.usage` carried in `done`/`command_result` payloads. Before the first generation it shows the chars/4 estimate. In-browser transport shows the estimate only (Transformers.js exposes no usage — documented ceiling); `/cost` and `/doctor` still explain themselves in the chat canvas.
 
 ### 2.4 States
 

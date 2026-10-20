@@ -79,6 +79,16 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* Phase 12: per-session usage readout above the model status. */
+#usage-line {
+  font-size: 11px;
+  color: var(--muted);
+  padding-top: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .dot {
   display: inline-block;
   width: 8px; height: 8px;

@@ -19,11 +19,15 @@ from openai import OpenAI
 
 from core import AgentState, ChatMessage, ToolCall, ToolRegistry
 from core.context import compact_to_budget, trim_to_budget
+from core.telemetry import DEFAULT_SERVER_URL, record_usage
 
 logger = logging.getLogger(__name__)
 
 OPENAI_API_KEY = "local-no-key-required"
-DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
+# Canonical constant lives in core/telemetry.py (Phase 12 doctor probes use it
+# too); re-exported under the Phase 4 name so cli.py / web/server.py imports
+# keep working.
+DEFAULT_BASE_URL = DEFAULT_SERVER_URL
 DEFAULT_TEMPERATURE = 0.1
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TOP_K = 50
@@ -157,6 +161,7 @@ class LlamaCppProvider:
         compaction: bool | None = None,
     ) -> None:
         self.registry = registry
+        self.base_url = base_url
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.top_k = top_k
@@ -264,6 +269,7 @@ class LlamaCppProvider:
             self.last_latency_s = time.monotonic() - started
             self.last_usage = response.usage.model_dump() if response.usage else {}
             self._warn_on_overflow()
+            record_usage(state, self.last_usage, self.last_latency_s)
             return _from_openai_message(response.choices[0].message)
 
         content_parts: list[str] = []
@@ -297,6 +303,7 @@ class LlamaCppProvider:
         self.last_latency_s = time.monotonic() - started
 
         self._warn_on_overflow()
+        record_usage(state, self.last_usage, self.last_latency_s)
 
         function_calls = None
         if tool_calls:

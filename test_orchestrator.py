@@ -371,6 +371,69 @@ def test_provider_keeps_tool_pair_when_within_budget() -> None:
     assert request["messages"][-2]["tool_calls"][0]["id"] == "c9"
 
 
+def test_provider_records_usage_in_state() -> None:
+    """Phase 12: the provider feeds its captured usage + latency into
+    state.usage (TurnUsage records) after every generate."""
+    from core.telemetry import session_usage
+    from windows.orchestrator import LlamaCppProvider
+
+    class FakeUsage:
+        def __init__(self, prompt: int, completion: int, total: int) -> None:
+            self.prompt_tokens = prompt
+            self.completion_tokens = completion
+            self.total_tokens = total
+
+        def model_dump(self):
+            return {
+                "prompt_tokens": self.prompt_tokens,
+                "completion_tokens": self.completion_tokens,
+                "total_tokens": self.total_tokens,
+            }
+
+    class FakeChoice:
+        def __init__(self, message) -> None:
+            self.message = message
+
+    class FakeMessage:
+        def __init__(self, content="stub") -> None:
+            self.content = content
+
+    class FakeResponse:
+        usage = FakeUsage(1000, 40, 1040)
+        choices = [FakeChoice(FakeMessage("stub"))]
+
+    class FakeCompletions:
+        def __init__(self, client) -> None:
+            self.client = client
+
+        def create(self, **kwargs):
+            self.client.calls.append(kwargs)
+            return FakeResponse()
+
+    class FakeChat:
+        def __init__(self, client) -> None:
+            self.completions = FakeCompletions(client)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+            self.chat = FakeChat(self)
+
+    registry: TR = default_registry()
+    provider = LlamaCppProvider(registry=registry)
+    provider.client = FakeClient()
+    state = AgentState(target="windows", model="LFM2.5-1.2B-Instruct", messages=[user_message("ping")])
+    provider(state)
+    assert len(state.usage) == 1
+    record = state.usage[0]
+    assert record.prompt_tokens == 1000
+    assert record.completion_tokens == 40
+    assert record.total_tokens == 1040
+    assert record.latency_s > 0
+    summary = session_usage(state)
+    assert summary["turns"] == 1 and summary["total_tokens"] == 1040
+
+
 if __name__ == "__main__":
     import sys
 

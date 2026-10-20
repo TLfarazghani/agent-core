@@ -4,6 +4,8 @@ Full phased build plan for agent-core. Source: `local-agent-lfm25-research.md` (
 
 **Status (2026-10-19):** completed & gates passed — phases 0, 1, 1b, 2, 3, 5, 6, 7, **8**. Phase 4 Windows path shipped but its Android port and in-browser WebGPU model are unverified; Phase 6b compaction is not built. **Phases 9–12 below are planned, not built** (no code). Verified test run: 197 pass (165 pytest + 28 JS engine/context/Phase-8 + 4 parser parity).
 
+*(2026-10-20 update: phases 9, 10, 11 and **12** are now built — see the per-phase "Status" lines and `AGENTS.md` for the current truth. Phase 6b compaction also shipped opt-in.)*
+
 ## Locked decisions (2026-08-17)
 
 | Decision | Choice |
@@ -231,7 +233,7 @@ Not defined by the research doc — the three targets are Windows, Android, WebG
 
 Second-model gates (A, B) recorded in `docs/benchmarks.md`; Windows default decision made on measured data, not vibes.
 
-## Phases 8–12 — Claude Code architecture review (Phases 8–11 built; 12 planned)
+## Phases 8–12 — Claude Code architecture review (all built: 8, 9, 10, 11, 12)
 
 **Source:** an architectural review of the leaked Claude Code source (`codeaashu/claude-code`, leaked 2026-03-31). That repository archives **unlicensed, proprietary** Anthropic code, so Phases 8–12 borrow **patterns only, never source**. They are the subset of its architecture that fits a local, privacy-first LFM2.5 assistant; the rest is explicitly rejected (see the mapping table below). Everything stays stdlib-only and transport-agnostic with JS/Android parity, and the hardcoded approval gate (`core/tool_registry.py:18`, `:102`) is never weakened.
 
@@ -285,14 +287,15 @@ Second-model gates (A, B) recorded in `docs/benchmarks.md`; Windows default deci
 
 ## Phase 12 — Observability (cost, context, doctor)
 
-Claude Code surfaces `/cost`, `/context`, and `/doctor`. Agent Core already captures `usage` in `windows/orchestrator.py` but never shows it.
+**Status: built (Phase 12 complete, 2026-10-20).** Claude Code surfaces `/cost`, `/context`, and `/doctor`. Agent Core already captures `usage` in `windows/orchestrator.py` but never shows it.
 
-- [ ] `core/telemetry.py` (stdlib-only, **local only — no network**): accumulate per-session prompt/completion tokens and turn timing from the provider usage already captured; expose `session_usage(state)`.
-- [ ] `/cost` + `/context` commands and a web sidebar readout: tokens used vs `max_context_tokens`, per-turn tok/s, tokens-only cost (inference is local).
-- [ ] `/doctor` — self-diagnostics extending `inspect_self`: llama-server reachability, Docker availability for `run_code`, model/ctx match (the `Core-agent.bat` `:server_model` probe already hits `/v1/models`), session/memory dir writability.
-- [ ] Tests: usage accumulation and formatting; doctor output with fake/unavailable dependencies (no live server).
+- [x] `core/telemetry.py` (stdlib-only, **local only — no network**): `record_usage(state, usage, latency_s)` appends one `TurnUsage` record per provider generate to `AgentState.usage` (server-reported prompt/completion/total tokens + latency + timestamp); `session_usage(state)` folds it into a summary (turns, totals, generation time, mean/last-turn tok/s); `format_cost()` renders the tokens-only bill — **inference is local, so `$0.00` always**. Pure logic mirrored in `web/telemetry.js`.
+- [x] `AgentState.usage: list[TurnUsage]` (pydantic + `schemas/agent_state.schema.json` + `docs/data-contracts.md`) serializes with the session, so usage survives CLI ↔ web resumes. `windows/orchestrator.LlamaCppProvider` calls `record_usage` after every generate (streaming and not; the stream uses `stream_options.include_usage` from Phase 4).
+- [x] `/cost` + `/context` commands (both UIs via the shared `core/commands.py` table): `/cost` prints the session usage summary; `/context` keeps the Phase 6 budget line and adds a "Real usage (server-reported)" line when usage exists. Web parity: `/cost` and the enhanced `/context` in `web/commands.js`; sidebar readout (`#usage-line`) shows real prompt tokens vs the budget (from `/api/health`'s new `max_context_tokens`), last-turn tok/s, and session total tokens; in-browser falls back to the chars/4 estimate (documented ceiling — Transformers.js does not surface usage).
+- [x] `/doctor` — self-diagnostics extending `inspect_self` (which now also carries the usage summary): llama-server `/health`, model/ctx match (`/v1/models` id vs `AgentState.model`, plus the client budget vs the per-model table ctx in `EXPECTED_CTX_BY_MODEL`), Docker availability for `run_code`, and session/memory dir writability. Every probe is injectable (`CommandContext.doctor_probes` / probe parameters), so tests run with fake servers and daemons — no live dependencies. Host-only in the browser (the web UI routes `/doctor` through `POST /api/sessions/<id>/command`).
+- [x] Tests: `test_telemetry.py` (recording normalization, never-raises, summary math, `save_session` round-trip, formatting, every probe up/down/mismatch/crash, format output); `/cost` + `/doctor` + enhanced `/context` in `test_commands.py`; provider usage recording in `test_orchestrator.py`; the command endpoint with injected probes + `/api/health` budget in `test_web.py`; Phase-12 parity cases in `test_webgpu_engine.mjs`.
 
-**Gate:** `/cost` and `/context` report accurate session usage; `/doctor` correctly reports each dependency's state without a live model.
+**Gate: PASSED 2026-10-20** — `/cost` and `/context` report accurate session usage (real server tokens when the provider captures them), `/doctor` correctly reports each dependency's state from injected probes without a live model, and the whole suite (248 pytest + 45 engine-parity + 4 parser) stays green.
 
 ## Claude Code mapping (borrowed vs. rejected)
 

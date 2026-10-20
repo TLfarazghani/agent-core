@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
-
 from .context import estimate_tokens
 from .memory import MEMORY_DIR, recall_bounded
 from .meta import AGENT_NAME, agent_bio, inspect_self
@@ -29,6 +28,13 @@ from .sessions import (
 )
 from .state import PERMISSION_MODES, AgentState, ChatMessage
 from .tasks import VALID_TASK_STATUSES, create_task, render_tasks, update_task
+from .telemetry import (
+    DEFAULT_SERVER_URL,
+    format_cost,
+    format_doctor,
+    run_doctor,
+    session_usage,
+)
 from .tool_registry import ToolRegistry
 
 DEFAULT_MAX_CONTEXT_TOKENS = 32768
@@ -43,6 +49,11 @@ class CommandContext:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     session_dir: Path = field(default_factory=lambda: SESSION_DIR)
     memory_dir: Path = field(default_factory=lambda: MEMORY_DIR)
+    # Phase 12: the llama-server OpenAI endpoint this platform talks to, and an
+    # optional {check_name: callable} override for /doctor's probes (the test
+    # seam -- never touch the real network or daemon from a test).
+    server_base_url: str = DEFAULT_SERVER_URL
+    doctor_probes: Optional[dict[str, Callable[[], dict]]] = None
 
 
 @dataclass
@@ -152,14 +163,42 @@ def _context(ctx: CommandContext, arg: str) -> CommandResult:
     used = estimate_tokens(ctx.state.messages)
     budget = ctx.max_context_tokens
     pct = (used / budget * 100) if budget else 0.0
-    return CommandResult(
-        text=(
-            f"Context: ~{used} tokens / {budget} ({pct:.1f}%)\n"
-            f"Messages: {len(ctx.state.messages)}  "
-            f"turns: {ctx.state.turn_count}/{ctx.state.max_turns}  "
-            f"mode: {ctx.state.permission_mode}"
+    lines = [
+        f"Context: ~{used} tokens / {budget} ({pct:.1f}%)",
+        f"Messages: {len(ctx.state.messages)}  "
+        f"turns: {ctx.state.turn_count}/{ctx.state.max_turns}  "
+        f"mode: {ctx.state.permission_mode}",
+    ]
+    # Phase 12: when the provider captured real server usage, show the
+    # ground-truth numbers next to the chars/4 estimate.
+    report = session_usage(ctx.state)
+    if report["turns"]:
+        lines.append(
+            f"Real usage (server-reported): session total "
+            f"{report['total_tokens']} tokens"
+            f" ({report['completion_tokens']} completion"
+            f" @ {report['tokens_per_second']:.1f} tok/s)"
         )
+    return CommandResult(text="\n".join(lines))
+
+
+def _cost(ctx: CommandContext, arg: str) -> CommandResult:
+    """Phase 12: per-session token usage. Local inference => $0, tokens only."""
+    return CommandResult(text=format_cost(session_usage(ctx.state)))
+
+
+def _doctor(ctx: CommandContext, arg: str) -> CommandResult:
+    """Phase 12: self-diagnostics. Probes are injectable via the context, so
+    tests run this with fake servers/daemons and never touch the network."""
+    report = run_doctor(
+        ctx.state,
+        base_url=ctx.server_base_url,
+        max_context_tokens=ctx.max_context_tokens,
+        session_dir=ctx.session_dir,
+        memory_dir=ctx.memory_dir,
+        probes=ctx.doctor_probes,
     )
+    return CommandResult(text=format_doctor(report))
 
 
 def _plan(ctx: CommandContext, arg: str) -> CommandResult:
@@ -259,6 +298,8 @@ _COMMANDS = (
     Command("/tools", "list registered tools", "/tools", _tools),
     Command("/status", "live self snapshot", "/status", _status),
     Command("/context", "token budget usage", "/context", _context),
+    Command("/cost", "session token usage (local: $0)", "/cost", _cost),
+    Command("/doctor", "self-diagnostics (server, docker, dirs)", "/doctor", _doctor),
     Command("/plan", "render the current plan", "/plan", _plan),
     Command("/tasks", "list/add/update the task backlog", "/tasks [add <text>|task_N <status>]", _tasks),
     Command("/memory", "recall long-term memory", "/memory [topic]", _memory),

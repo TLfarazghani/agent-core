@@ -15,6 +15,7 @@ import { createEngine, newState, requiresApproval, PERMISSION_MODES } from "./we
 import { compactToBudget, estimateTokens, shouldCompact, trimToBudget } from "./web/context.js";
 import { makePlan, updatePlan } from "./web/planner.js";
 import { COMMANDS, helpText, parseCommand, runCommand } from "./web/commands.js";
+import { formatTokens, sessionUsage } from "./web/telemetry.js";
 import { activateSkill, loadSkills, renderSkills } from "./web/skills.js";
 import { createTask, renderTasks, updateTask } from "./web/tasks.js";
 import { MAX_CONCURRENT_SUBAGENTS, spawnSubagent } from "./web/subagent.js";
@@ -439,9 +440,14 @@ async function test_engine_set_permission_mode() {
 
 async function test_commands_registry_parity() {
   const names = Object.keys(COMMANDS);
+  // Browser table mirrors core/commands.py minus host-only commands:
+  // /resume //approve /reject /quit run on the host drive; /doctor probes the
+  // host's llama-server, Docker daemon, and directories (documented ceiling —
+  // the web UI routes /doctor through POST /api/sessions/<id>/command).
   assert.deepEqual(names.sort(), [
-    "/context", "/help", "/memory", "/mode", "/new", "/plan", "/status", "/tasks", "/tools", "/turns",
+    "/context", "/cost", "/help", "/memory", "/mode", "/new", "/plan", "/status", "/tasks", "/tools", "/turns",
   ]);
+  assert.ok(!names.includes("/doctor"), "/doctor is host-only in the browser");
   assert.deepEqual(parseCommand("/turns 3"), { name: "/turns", arg: "3" });
   assert.deepEqual(parseCommand("  /mode  plan "), { name: "/mode", arg: "plan" });
   assert.ok(helpText().includes("/mode"));
@@ -628,6 +634,81 @@ async function test_phase11_command_tasks() {
   assert.ok(runCommand("/tasks task_99 done", state).error, "unknown task id errors");
 }
 
+/* ---------- Phase 12: telemetry (core/telemetry.js port + /cost) ---------- */
+
+function usageRecord(prompt, completion, latency) {
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: prompt + completion,
+    latency_s: latency,
+    at: 1792460000.0,
+  };
+}
+
+async function test_phase12_new_state_records_usage_list() {
+  const state = newState({});
+  assert.deepEqual(state.usage, []);
+  state.usage.push(usageRecord(100, 10, 0.5));
+  assert.deepEqual(state.usage.length, 1);
+}
+
+async function test_phase12_session_usage_totals_and_tps() {
+  const state = newState({});
+  assert.deepEqual(sessionUsage(state), {
+    turns: 0,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    generate_seconds: 0,
+    tokens_per_second: 0.0,
+    last_tokens_per_second: 0.0,
+  });
+  state.usage.push(usageRecord(2000, 100, 2.0));
+  state.usage.push(usageRecord(1500, 200, 4.0));
+  const summary = sessionUsage(state);
+  assert.equal(summary.turns, 2);
+  assert.equal(summary.prompt_tokens, 3500);
+  assert.equal(summary.completion_tokens, 300);
+  assert.equal(summary.total_tokens, 3800);
+  assert.equal(summary.generate_seconds, 6.0);
+  assert.equal(summary.tokens_per_second, 50.0, "300 completion tok / 6.0s");
+  assert.equal(summary.last_tokens_per_second, 50.0);
+}
+
+async function test_phase12_format_tokens_matches_python_commas() {
+  assert.equal(formatTokens(0), "0");
+  assert.equal(formatTokens(1234), "1,234");
+  assert.equal(formatTokens(9182736), "9,182,736");
+}
+
+async function test_phase12_cost_command_parity() {
+  const state = newState({});
+  const empty = runCommand("/cost", state);
+  assert.equal(empty.error, false);
+  assert.ok(empty.text.startsWith("No usage recorded yet"), empty.text);
+  assert.ok(empty.text.includes("local"), empty.text);
+
+  state.usage.push(usageRecord(2014, 412, 6.25));
+  const populated = runCommand("/cost", state);
+  assert.equal(populated.error, false);
+  assert.ok(populated.text.includes("Session usage: 1 generation(s)"), populated.text);
+  assert.ok(populated.text.includes("2,014"), populated.text);
+  assert.ok(populated.text.includes("2,426"), "total falls back to prompt+completion");
+  assert.ok(populated.text.includes("$0.00 - local, no metered API calls"), populated.text);
+}
+
+async function test_phase12_context_command_real_usage_line() {
+  const state = newState({});
+  const base = runCommand("/context", state, { max_context_tokens: 2048 });
+  assert.ok(!base.text.includes("Real usage"), base.text);
+  state.usage.push(usageRecord(512, 64, 0.8));
+  const withUsage = runCommand("/context", state, { max_context_tokens: 2048 });
+  assert.ok(withUsage.text.includes("Real usage (server-reported)"), withUsage.text);
+  assert.ok(withUsage.text.includes("576"), withUsage.text);
+  assert.ok(withUsage.text.includes("tok/s"), withUsage.text);
+}
+
 async function main() {
   const tests = [
     test_ordinary_tool_executes,
@@ -670,6 +751,11 @@ async function main() {
     test_phase11_compaction_never_splits_tool_pair,
     test_phase11_tasks_module_parity,
     test_phase11_command_tasks,
+    test_phase12_new_state_records_usage_list,
+    test_phase12_session_usage_totals_and_tps,
+    test_phase12_format_tokens_matches_python_commas,
+    test_phase12_cost_command_parity,
+    test_phase12_context_command_real_usage_line,
   ];
   let failures = 0;
   for (const test of tests) {
