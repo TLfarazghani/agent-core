@@ -37,7 +37,25 @@ Test suites (verified 2026-10-20 after Phase 12): **297 pass** — **248** via `
 
 Build order is forced by dependency: Phase 3 (code execution) dispatches through the same loop Phase 0 builds.
 
+## Requirements
+
+- **Windows 10/11** with PowerShell 5.1+ (PowerShell scripts)
+- **Python 3.13** (3.13.5 tested) — the machine's system `pip` may point at an older Python (3.10 here); always use `py -3.13` or the venv interpreter
+- **NVIDIA GPU** for the pinned CUDA 12.4 llama.cpp build (works on the CUDA 12.9 driver)
+- **Docker Desktop** — optional, only for the `run_code` sandbox
+- ~800 MB disk for the GGUF + ~240 MB for the llama.cpp prebuilt
+
 ## Quickstart
+
+**One-shot (recommended):**
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
+```
+
+Creates `.venv` with Python 3.13, installs `requirements.txt` (pydantic, jsonschema, python-docx, python-pptx, docker, **openai v3**, huggingface-hub), downloads the selected model's GGUF into `models\` (default `LFM2.5-1.2B-Instruct`; `-Model LFM2.5-2.6B` / `LFM2.5-8B-A1B`), fetches the pinned llama.cpp binary into `vendor\llama\` if missing, and prints a health-check summary. Safe to re-run — every step no-ops when its artifact exists. Useful switches: `-SkipModelDownload`, `-SkipLlamaDownload`, `-RunTests`.
+
+**Manual:**
 
 ```powershell
 py -3.13 -m venv .venv

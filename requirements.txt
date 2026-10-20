@@ -1,5 +1,32 @@
-pydantic>=2.13
-jsonschema>=4.23
-python-docx>=1.2
-python-pptx>=1.0
-docker>=7.2
+# agent-core runtime dependencies.
+#
+# IMPORTANT: install with the venv interpreter, never bare `pip`:
+#   py -3.13 -m venv .venv
+#   .venv\Scripts\python -m pip install -r requirements.txt
+# (On this project's machine the system `pip` resolves to a Python 3.10
+# site-packages — see AGENTS.md "Toolchain gotchas". `bootstrap.ps1` does this
+# for you.)
+#
+# This machine's verified versions (2026-10-20): pydantic 2.13.4, jsonschema
+# 4.26.0, python-docx 1.2.0, python-pptx 1.0.2, docker 7.2.0, openai 3.1.0,
+# huggingface-hub 1.27.0. Major releases (the `,<N>` caps) change API surfaces
+# this codebase depends on — bump deliberately after testing, never silently.
+
+pydantic>=2.13,<3
+jsonschema>=4.23,<5
+python-docx>=1.2,<2
+python-pptx>=1.0,<2
+
+# Docker SDK for the run_code sandbox (tools/run_code.py; injectable client in tests)
+docker>=7.2,<8
+
+# openai v3 client — windows/orchestrator.py targets the v3 API shape
+# (client.chat.completions.create(**kwargs), stream_options, extra_body).
+# v1 research-era shapes are outdated (see the toolchain gotcha), and v4 is a
+# major-release unknown — pin the major.
+openai>=3.1,<4
+
+# Model downloader: provides the `hf` CLI used by bootstrap.ps1 to fetch GGUFs
+# into models/ (huggingface_hub 1.x ships hf.exe; there is no
+# `python -m huggingface_hub` module in 1.x).
+huggingface-hub>=1.0,<2
