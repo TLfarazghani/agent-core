@@ -11,8 +11,8 @@
 #   - bootstrap.ps1 step 3 installs from THIS file (pinned pip, no blind
 #     `--upgrade pip`); it falls back to ranged requirements.txt with a
 #     warning only if this file is missing.
-#   - CI (.github/workflows/ci.yml) installs from it, then asserts a fresh
-#     `pip freeze` equals it exactly, so the lock cannot silently drift.
+#   - Future CI should install from it and assert that a fresh `pip freeze`
+#     equals it exactly, so the lock cannot silently drift.
 #
 # REGENERATE (only after deliberately bumping requirements.txt AND running the
 # full suites, per AGENTS.md -- never silently):
