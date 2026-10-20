@@ -53,7 +53,7 @@ Build order is forced by dependency: Phase 3 (code execution) dispatches through
 powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 ```
 
-Creates `.venv` with Python 3.13, installs `requirements.txt` (pydantic, jsonschema, python-docx, python-pptx, docker, **openai v3**, huggingface-hub), downloads the selected model's GGUF into `models\` (default `LFM2.5-1.2B-Instruct`; `-Model LFM2.5-2.6B` / `LFM2.5-8B-A1B`), fetches the pinned llama.cpp binary into `vendor\llama\` if missing, and prints a health-check summary. Safe to re-run — every step no-ops when its artifact exists. Useful switches: `-SkipModelDownload`, `-SkipLlamaDownload`, `-RunTests`.
+Creates `.venv` with Python 3.13, installs `requirements.txt` (pydantic, jsonschema, python-docx, python-pptx, docker, **openai v3**, huggingface-hub), downloads the selected model's GGUF into `models\` (default `LFM2.5-1.2B-Instruct`; `-Model LFM2.5-2.6B` / `LFM2.5-8B-A1B`), fetches the pinned llama.cpp binary into `vendor\llama\` if missing, and prints a health-check summary. Safe to re-run — every step no-ops when its artifact exists. Useful switches: `-SkipModelDownload`, `-SkipLlamaDownload`, `-RunTests`. Downloaded artifacts are verified against published sha256 hashes pinned in the script; the exit code is nonzero only for real failures — optional bits (Docker absent, services not yet started) are warnings/notes.
 
 **Manual:**
 

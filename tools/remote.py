@@ -14,6 +14,15 @@ real MCP Streamable HTTP server):
      "params":{"name":"web_search","arguments":{"query":"..."}}}
 
     -> {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"..."}]}}
+
+Auth scheme: when an api_key is configured, every request carries
+``Authorization: Bearer <api_key>`` (the exact configured key — never a
+masked/redacted placeholder going over the wire); with no key configured NO
+Authorization header is sent at all (an empty or absent key is unconfigured,
+not "a literal '' password"). Client-side error messages NEVER embed the
+configured key: non-2xx responses surface status + server-provided detail
+only, and any accidental echo of the key inside a server body is redacted to
+"***". The key is also never logged by this module.
 """
 
 from __future__ import annotations
@@ -36,6 +45,19 @@ class McpClient:
         self.api_key = api_key
         self.timeout = timeout
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Authorization for the configured key; empty dict when unconfigured."""
+        if not self.api_key:
+            return {}
+        return {"Authorization": f"Bearer {self.api_key}"}
+
+    @staticmethod
+    def _redact(text: str, api_key: str | None) -> str:
+        """Scrub an accidental key echo out of server-provided detail."""
+        if api_key and api_key in text:
+            return text.replace(api_key, "***")
+        return text
+
     def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         body = json.dumps(
             {
@@ -46,9 +68,7 @@ class McpClient:
             }
         ).encode("utf-8")
 
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers = {"Content-Type": "application/json", **self._auth_headers()}
 
         try:
             request = urllib.request.Request(
@@ -56,8 +76,21 @@ class McpClient:
             )
             with urllib.request.urlopen(request, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # Non-2xx (401/403 auth failures, 4xx/5xx in general). Surface the
+            # status + server detail, never our own headers/request content:
+            # a server body that echoes the Authorization header is scrubbed
+            # so the configured key never lands in model context or logs.
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:  # noqa: BLE001 - body may be unreadable
+                detail = ""
+            detail = self._redact(detail, self.api_key)
+            raise RemoteError(
+                f"remote http error {exc.code}: {detail}".rstrip()
+            ) from exc
         except urllib.error.URLError as exc:
-            raise RemoteError(f"remote unreachable: {exc.reason}") from exc
+            raise RemoteError(f"remote unreachable: {exc.reason or exc}") from exc
         except json.JSONDecodeError as exc:
             raise RemoteError(f"remote returned non-JSON response: {exc}") from exc
 

@@ -31,6 +31,9 @@ class MockRemoteState:
         self.calls: list[dict[str, Any]] = []
         self.auth_seen: str | None = None
         self.fail_next = False
+        # Misbehaving-remote mode: 401 EVEN when the presented key is valid,
+        # echoing the received header — used to exercise client-side redaction.
+        self.reject_valid_key = False
 
 
 class MockMcpServer:
@@ -49,7 +52,31 @@ class MockMcpServer:
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length))
                 server.state.calls.append(payload)
-                server.state.auth_seen = self.headers.get("Authorization")
+                auth = self.headers.get("Authorization")
+                server.state.auth_seen = auth
+
+                # Enforce the configured key like a real remote would: reject
+                # with 401 + a detail that echoes the RECEIVED header, so the
+                # client-side redaction path is exercised on the wire. The
+                # expected key is never included in any response.
+                # reject_valid_key simulates a misbehaving remote that 401s
+                # even on a VALID key while echoing it back — the client must
+                # scrub that echo before the detail reaches model context.
+                if server._api_key and (
+                    auth != f"Bearer {server._api_key}" or server.state.reject_valid_key
+                ):
+                    self._send(
+                        401,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": payload.get("id"),
+                            "error": {
+                                "code": -32001,
+                                "message": f"invalid api key (received: {auth!r})",
+                            },
+                        },
+                    )
+                    return
 
                 if server.state.fail_next:
                     server.state.fail_next = False
@@ -180,16 +207,65 @@ def test_api_key_forwarded() -> None:
         server.stop()
 
 
+def test_no_api_key_sends_no_authorization_header() -> None:
+    """Unconfigured key = NO Authorization header at all — not an empty
+    header, not a masked placeholder."""
+    server = MockMcpServer()
+    server.start()
+    try:
+        registry = ToolRegistry()
+        register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
+        state = _new_state()
+        registry.dispatch(state, ToolCall(id="call_0001", name="send_message", arguments={"channel": "telegram", "to": "me", "text": "hi"}))
+        resolve_approval(state, registry, approved=True)  # gate: external send needs human OK
+        assert server.state.auth_seen is None  # no Authorization header received
+        assert server.state.calls[0]["params"]["name"] == "send_message"  # call still went through
+        assert "message sent" in state.messages[-1].content
+    finally:
+        server.stop()
+
+
+def test_api_key_redacted_from_error_detail() -> None:
+    """A misbehaving remote that 401s on a VALID key while echoing the
+    received Authorization header back must never leak the key into model
+    context: the tool result carries '***' in its place."""
+    server = MockMcpServer(api_key="secret-key")
+    server.state.reject_valid_key = True
+    server.start()
+    try:
+        registry = ToolRegistry()
+        register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}", api_key="secret-key")
+        state = _new_state()
+        registry.dispatch(state, ToolCall(id="call_0001", name="send_message", arguments={"channel": "telegram", "to": "me", "text": "hi"}))
+        resolve_approval(state, registry, approved=True)  # gate: external send needs human OK
+        assert server.state.auth_seen == "Bearer secret-key"  # the REAL key went out...
+        result = state.messages[-1].content
+        assert result.startswith("error:")  # surfaced as a tool error...
+        assert "401" in result  # ...with the status visible...
+        assert "***" in result  # ...the echo scrubbed to a placeholder...
+        assert "secret-key" not in result  # ...and the key itself never present
+    finally:
+        server.stop()
+
+
 def test_remote_failure_surfaces_as_tool_error() -> None:
+    """A JSON-RPC-level failure from the remote surfaces as a tool error.
+    Exercised end-to-end through the approval gate with send_message, since
+    web_search is a local tool now and would never reach the server."""
     server = MockMcpServer()
     server.start()
     try:
         registry = ToolRegistry()
         register_networked_tools(registry, base_url=f"http://127.0.0.1:{server.port}")
         server.state.fail_next = True
-        msg = _dispatch(registry, "web_search", {"query": "q"})
-        assert msg is not None and msg.role == "tool"
+        state = _new_state()
+        registry.dispatch(state, ToolCall(id="call_0001", name="send_message", arguments={"channel": "telegram", "to": "me", "text": "hi"}))
+        resolve_approval(state, registry, approved=True)  # gate: external send needs human OK
+        msg = state.messages[-1]
+        assert msg.role == "tool"
         assert "error" in msg.content
+        assert "simulated failure" in msg.content  # the remote's own detail, surfaced
+        assert len(server.state.calls) == 1  # the failure came from the wire, not local validation
     finally:
         server.stop()
 

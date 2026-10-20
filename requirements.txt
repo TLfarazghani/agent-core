@@ -1,16 +1,22 @@
-# agent-core runtime dependencies.
+# agent-core runtime dependencies (direct deps, declared as RANGES -- this is
+# the human-curated INTENT file). The reproducible install target is
+# requirements.lock (fully pinned, transitive-inclusive); bootstrap.ps1 and CI
+# prefer it and only fall back to this file with a warning.
 #
 # IMPORTANT: install with the venv interpreter, never bare `pip`:
 #   py -3.13 -m venv .venv
-#   .venv\Scripts\python -m pip install -r requirements.txt
+#   .venv\Scripts\python -m pip install -r requirements.lock   (reproducible)
+#   .venv\Scripts\python -m pip install -r requirements.txt    (ranged fallback)
 # (On this project's machine the system `pip` resolves to a Python 3.10
 # site-packages — see AGENTS.md "Toolchain gotchas". `bootstrap.ps1` does this
 # for you.)
 #
 # This machine's verified versions (2026-10-20): pydantic 2.13.4, jsonschema
 # 4.26.0, python-docx 1.2.0, python-pptx 1.0.2, docker 7.2.0, openai 3.1.0,
-# huggingface-hub 1.27.0. Major releases (the `,<N>` caps) change API surfaces
-# this codebase depends on — bump deliberately after testing, never silently.
+# huggingface-hub 1.27.0, pytest 9.1.1. Major releases (the `,<N>` caps) change
+# API surfaces this codebase depends on — bump deliberately after testing,
+# never silently. After any bump here, regenerate requirements.lock (header)
+# and re-run the Python + Node suites.
 
 pydantic>=2.13,<3
 jsonschema>=4.23,<5
@@ -30,3 +36,8 @@ openai>=3.1,<4
 # into models/ (huggingface_hub 1.x ships hf.exe; there is no
 # `python -m huggingface_hub` module in 1.x).
 huggingface-hub>=1.0,<2
+
+# Test runner: `python -m pytest` (all test_*.py; test_parser_js.py needs Node
+# on PATH) and bootstrap.ps1 -RunTests. Previously missing here, so -RunTests
+# failed on a cold venv.
+pytest>=9,<10
