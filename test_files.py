@@ -8,11 +8,13 @@ Runnable directly or via pytest.
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
 from core import AgentState, ToolCall, ToolRegistry, new_state, resolve_approval
 from tools import register_files_tools
+from tools.files import sensitive_match
 
 
 def _new_state() -> AgentState:
@@ -214,6 +216,120 @@ def test_grep_invalid_regex_reports_error() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         msg = _call(_registry(Path(tmp)), "grep", {"pattern": "("})
         assert msg.content.startswith("error:")
+
+
+def test_sensitive_match_covers_secret_classes() -> None:
+    """The matcher keys on basename or full relpath, any depth, any case."""
+    assert sensitive_match(".env") == ".env"
+    assert sensitive_match("deploy/.env") == ".env"
+    assert sensitive_match("deploy/.env.Production") == ".env.*"
+    assert sensitive_match("server.pem") == "*.pem"
+    assert sensitive_match("a/b/server.KEY") == "*.key"
+    # .ssh/* and id_rsa* both key; either match means refusal, so only assert
+    # "matched" here rather than which rule fired first.
+    assert sensitive_match(".ssh/id_rsa") is not None
+    assert sensitive_match("aws/credentials.json") == "credentials.json"
+    assert sensitive_match("notes.txt") is None
+    assert sensitive_match("core/loop.py") is None
+
+
+def test_read_file_refuses_sensitive_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        (root / "key.pem").write_text("-----BEGIN", encoding="utf-8")
+        (root / "sub").mkdir()
+        (root / "sub" / ".env.local").write_text("SECRET=2\n", encoding="utf-8")
+        for name in (".env", "key.pem", "sub/.env.local"):
+            msg = _call(_registry(root), "read_file", {"path": name})
+            assert msg.content.startswith("error:"), name
+            assert "sensitive-file pattern" in msg.content, name
+            assert "SECRET" not in msg.content
+
+
+def test_read_file_sensitive_override_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        previous = os.environ.get("AGENT_CORE_FILE_ALLOW_SENSITIVE")
+        os.environ["AGENT_CORE_FILE_ALLOW_SENSITIVE"] = "1"
+        try:
+            msg = _call(_registry(root), "read_file", {"path": ".env"})
+            assert "SECRET=1" in msg.content
+        finally:
+            if previous is None:
+                os.environ.pop("AGENT_CORE_FILE_ALLOW_SENSITIVE", None)
+            else:
+                os.environ["AGENT_CORE_FILE_ALLOW_SENSITIVE"] = previous
+
+
+def test_edit_file_refuses_sensitive_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+        registry = _registry(root)
+        state = _new_state()
+        # Layer 1: the hardcoded approval gate parks it (the human sees the
+        # .env path and args in the approval prompt).
+        registry.dispatch(
+            state,
+            ToolCall(
+                id="c1",
+                name="edit_file",
+                arguments={"path": ".env", "old_string": "SECRET=1", "new_string": "x"},
+            ),
+        )
+        assert state.pending_approval is not None
+        # Layer 2: even an approved edit hits the handler-level guard.
+        resolve_approval(state, registry, approved=True)
+        msg = state.messages[-1]
+        assert msg.content.startswith("error:")
+        assert "sensitive-file pattern" in msg.content
+        # Nothing was rewritten either way.
+        assert (root / ".env").read_text(encoding="utf-8") == "SECRET=1\n"
+
+
+def test_write_sensitive_named_file_still_human_gated() -> None:
+    """Creating a secret file is a WRITE: it stays parked at the hardcoded
+    approval gate (the sensitive guard is about content reads, not writes)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        registry = _registry(root)
+        state = _new_state()
+        registry.dispatch(
+            state,
+            ToolCall(
+                id="c1",
+                name="write_file",
+                arguments={"path": ".env", "content": "SECRET=1"},
+            ),
+        )
+        assert state.pending_approval is not None
+        assert not (root / ".env").exists()
+
+
+def test_grep_skips_sensitive_files_and_reports_count() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".env").write_text("password=hunter2\n", encoding="utf-8")
+        (root / "code.py").write_text("needle = find_me\n", encoding="utf-8")
+        msg = _call(_registry(root), "grep", {"pattern": "needle", "path": "."})
+        assert "code.py:1:" in msg.content
+        assert "hunter2" not in msg.content
+        assert ".env" not in msg.content
+        assert "skipped 1 sensitive file(s)" in msg.content
+
+
+def test_grep_explicit_sensitive_target_refused() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / ".env").write_text("TOKEN=supersecret\n", encoding="utf-8")
+        msg = _call(
+            _registry(root), "grep", {"pattern": "TOKEN", "path": ".env"}
+        )
+        assert msg.content.startswith("error:")
+        assert "sensitive-file pattern" in msg.content
+        assert "supersecret" not in msg.content
 
 
 def test_registry_definitions_carry_flags() -> None:

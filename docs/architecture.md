@@ -76,6 +76,9 @@ agent-core/
     __init__.py            # register_web_tools / register_email_tools / register_networked_tools / register_docgen_tools / register_runcode_tool / register_cognitive_tools / register_files_tools / register_skills_tools / register_task_tools / register_subagent_tool
     cognitive.py           # state-aware handlers: inspect_self / remember / recall / make_plan / update_plan
     files.py               # Phase 9: read_file / write_file / edit_file / list_dir / glob / grep (rooted)
+                           #   + sensitive-file guard: SENSITIVE_PATTERNS/sensitive_match() refuses
+                           #   .env/key/credential reads (read_file, edit_file) and skips them in grep;
+                           #   AGENT_CORE_FILE_ALLOW_SENSITIVE=1 = explicit override per invocation
     skills.py              # Phase 10: run_skill / list_skills (tool allowlist)
     subagent.py            # Phase 10: the `agent` tool (transport-registered; needs a provider)
     tasks.py               # Phase 11: task_create / task_update / task_list

@@ -90,6 +90,16 @@ The web UI + API are **local-only and not authenticated**. Concrete protections 
 - CLI and web approvals (`run_code`, writes, external sends) are always human-gated via `resolve_approval`; `auto` mode never auto-approves code execution or external sends.
 - Sessions and memory live at `%USERPROFILE%\.agent-core\` — same user scope as the rest of the app.
 
+### File tools and secrets
+
+The agent's file tools (`read_file`, `grep`, `write_file`, `edit_file`, `list_dir`, `glob`) operate on everything under **`AGENT_CORE_FILE_ROOT`** (default: this repository). That root is not an index boundary — **explicit path reads are not limited to what `glob`/`list_dir` return**, so anything placed under the root can reach model context:
+
+- Known secret files (`.env`, `*.env`, `*.pem`, `*.key`, `*.pfx`, `*.p12`, `*.kdbx`, `id_rsa*`/`id_ed25519*`/`id_*` keys, `.ssh/*`, `.aws/*`, `.kube/config`, `.gnupg/*`, `.netrc`, `.npmrc`, `.git-credentials`, `credentials*.json`, `service-account*.json`, `secrets.y*ml`, `.htpasswd`) are **refused as content reads**: `read_file`/`edit_file` fail with the matched pattern named, `grep` skips them while scanning (and reports the skip count) and refuses an explicit grep of one. `list_dir`/`glob` expose names only, never content.
+- The escape hatch is `AGENT_CORE_FILE_ALLOW_SENSITIVE=1` — set it per-invocation when you genuinely need to read such a file, never globally.
+- **Do not keep real secrets under the file root.** The reliable fix is a narrower root: point `AGENT_CORE_FILE_ROOT` at a dedicated working directory that holds no secrets (recommended on shared or semi-trusted machines; keep the repo-root default only where the whole repository is already as trusted as this agent).
+- **Approved writes are modifications**: any `write_file`/`edit_file` you approve can create or replace — or corrupt — files under the root, including secret-named files. Check the path in the approval prompt before approving; the web UI additionally requires a one-time confirm token per write.
+- If a secret was read into a session, treat it as exposed to that session's log (`~/.agent-core/sessions/`) and rotate it.
+
 ## Key documents
 
 - [docs/plan.md](docs/plan.md) — phased build plan with verification gates

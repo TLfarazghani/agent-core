@@ -248,7 +248,7 @@
   },
   {
     "name": "read_file",
-    "description": "Read a UTF-8 text file under the allowed file root (AGENT_CORE_FILE_ROOT). Returns content, truncated to max_chars. Read-only.",
+    "description": "Read a UTF-8 text file under the allowed file root (AGENT_CORE_FILE_ROOT). Returns content, truncated to max_chars. Refuses known sensitive files (.env, *.{pem,key,pfx,p12,kdbx}, id_* keys, .ssh/*, .aws/*, credentials, ...) so secrets never enter the conversation; AGENT_CORE_FILE_ALLOW_SENSITIVE=1 overrides. Read-only.",
     "requires_approval": false,
     "read_only": true,
     "parameters": {
@@ -262,7 +262,7 @@
   },
   {
     "name": "write_file",
-    "description": "Create or overwrite a text file under the allowed file root. Atomic write; always requires human approval.",
+    "description": "Create or overwrite a text file under the allowed file root. Atomic write; always requires human approval. An approved write may create or replace any file under the root, including sensitive-named files (later reads of those are refused unless AGENT_CORE_FILE_ALLOW_SENSITIVE=1).",
     "requires_approval": true,
     "parameters": {
       "type": "object",
@@ -275,7 +275,7 @@
   },
   {
     "name": "edit_file",
-    "description": "Replace one unique occurrence of old_string with new_string in a file under the allowed file root. Fails if old_string is absent or occurs more than once. Atomic write; always requires human approval.",
+    "description": "Replace one unique occurrence of old_string with new_string in a file under the allowed file root. Fails if old_string is absent or occurs more than once. Refuses known sensitive files (.env, keys, credentials, ...) unless AGENT_CORE_FILE_ALLOW_SENSITIVE=1. Atomic write; always requires human approval (an approved write may create or replace any file under the root).",
     "requires_approval": true,
     "parameters": {
       "type": "object",
@@ -316,7 +316,7 @@
   },
   {
     "name": "grep",
-    "description": "Search file contents for a regular expression under the allowed file root. Returns 'path:line: text'. Read-only.",
+    "description": "Search file contents for a regular expression under the allowed file root. Returns 'path:line: text'. Sensitive files (.env, keys, credentials, ...) are skipped while scanning and the skip count is reported; an explicit grep on one is refused. Read-only.",
     "requires_approval": false,
     "read_only": true,
     "parameters": {

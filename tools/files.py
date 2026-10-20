@@ -7,10 +7,29 @@ hardcoded gate in ``core.tool_registry.dispatch()`` parks them.
 
 Every path is resolved under ``AGENT_CORE_FILE_ROOT`` (default: the repo root)
 and rejected if it escapes that root. Stdlib-only; tests inject a temp root.
+
+Sensitive-file guard (2026-10-20): the tool root is NOT an all-clear -- a
+stray ``.env``, private key, or credentials file inside it is as dangerous to
+read as one outside (its contents would land in model context). Explicit
+content reads therefore refuse well-known secret files:
+``read_file``/``edit_file`` fail on a match (with the matched pattern in the
+message), ``grep`` skips matches while scanning and reports the skip count,
+and ``list_dir``/``glob`` stay name-only (they never expose content).
+``AGENT_CORE_FILE_ALLOW_SENSITIVE=1`` disables the guard explicitly; the
+better fix is a narrower ``AGENT_CORE_FILE_ROOT`` pointing at a working
+directory that holds no secrets. Writes remain human-gated; note that an
+*approved* write may still create or replace any file under the root,
+including files the guard would refuse to read back until allowed.
+
+Root choice guidance: the repo default exists because the agent's job is
+working on this repository. On anything shared or semi-trusted, set
+``AGENT_CORE_FILE_ROOT`` narrower -- e.g. a dedicated workspace dir -- and
+keep separate roots per transport.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import tempfile
@@ -35,6 +54,39 @@ SKIP_DIRS = {
     "vendor",
 }
 
+# Content-bearing secret files: matched (fnmatch, case-insensitive) against
+# the root-relative path AND its basename, so a bare pattern like ".env" hits
+# every depth while dir-scoped patterns like ".ssh/*" key on the full path.
+# Mostly env/credential/key classes from gitignore lore. Extend with
+# stronger-named local blocks, not a broader "*secret*"-style wildcard.
+SENSITIVE_PATTERNS = (
+    ".env",
+    ".env.*",
+    "*.env",
+    "*.pem",
+    "*.key",
+    "*.pfx",
+    "*.p12",
+    "*.kdbx",
+    "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
+    ".htpasswd",
+    ".netrc",
+    ".npmrc",
+    ".git-credentials",
+    "credentials.json",
+    "credentials*.json",
+    "service-account*.json",
+    "secrets.yml",
+    "secrets.yaml",
+    ".ssh/*",
+    ".aws/*",
+    ".kube/config",
+    ".gnupg/*",
+)
+
 
 def default_root() -> Path:
     """The allowed file root: ``AGENT_CORE_FILE_ROOT`` or the repo root."""
@@ -42,6 +94,36 @@ def default_root() -> Path:
     if configured:
         return Path(configured).expanduser().resolve()
     return Path(__file__).resolve().parent.parent
+
+
+def _allow_sensitive() -> bool:
+    """Explicit override disabling the sensitive-file read guard."""
+    return os.environ.get("AGENT_CORE_FILE_ALLOW_SENSITIVE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def sensitive_match(rel_posix: str) -> str | None:
+    """Return the SENSITIVE_PATTERNS entry matching ``rel_posix`` or None."""
+    lowered = rel_posix.replace("\\", "/").lower()
+    name = lowered.rsplit("/", 1)[-1]
+    for pattern in SENSITIVE_PATTERNS:
+        pat = pattern.lower()
+        if fnmatch.fnmatch(lowered, pat) or fnmatch.fnmatch(name, pat):
+            return pattern
+    return None
+
+
+def _sensitive_refusal(display: str, pattern: str) -> str:
+    return (
+        f"error: refused to read '{display}' -- it matches sensitive-file "
+        f"pattern '{pattern}'. Secret files must not enter model context. "
+        "Move the secret out of AGENT_CORE_FILE_ROOT (or set a narrower "
+        "root), or set AGENT_CORE_FILE_ALLOW_SENSITIVE=1 to override "
+        "explicitly."
+    )
 
 
 def resolve_path(path: str, root: Path) -> Path:
@@ -124,6 +206,10 @@ def make_read_file_handler(root: Optional[Path] = None) -> Callable:
             return f"error: file not found: {raw}"
         if target.is_dir():
             return f"error: is a directory: {_display(target, base)}"
+        display = _display(target, base)
+        matched = sensitive_match(display)
+        if matched and not _allow_sensitive():
+            return _sensitive_refusal(display, matched)
         max_chars = _clamp(
             arguments.get("max_chars", DEFAULT_MAX_CHARS), 1, MAX_READ_CHARS
         )
@@ -184,6 +270,12 @@ def make_edit_file_handler(root: Optional[Path] = None) -> Callable:
             return f"error: file not found: {raw}"
         if target.is_dir():
             return f"error: is a directory: {_display(target, base)}"
+        display = _display(target, base)
+        matched = sensitive_match(display)
+        if matched and not _allow_sensitive():
+            # edit both READS the file (into the replace attempt) and rewrites
+            # it; the guard applies to the read half, so refuse symmetrically.
+            return _sensitive_refusal(display, matched)
         try:
             text = _read_text(target)
         except OSError as exc:
@@ -296,14 +388,25 @@ def make_grep_handler(root: Optional[Path] = None) -> Callable:
             arguments.get("max_results", 100), 1, MAX_GREP_RESULTS
         )
         files = [start] if start.is_file() else _iter_files(start)
+        if start.is_file():
+            # An explicit grep on a single secret file is just a content read:
+            # apply the same refusal as read_file.
+            display = _display(start, base)
+            matched = sensitive_match(display)
+            if matched and not _allow_sensitive():
+                return _sensitive_refusal(display, matched)
         results = []
         scanned = 0
+        skipped_sensitive = 0
         for path in files:
             scanned += 1
             if scanned > MAX_GREP_FILES:
                 results.append(f"... [stopped after {MAX_GREP_FILES} files]")
                 break
             if not _contained(path, base):
+                continue
+            if sensitive_match(_display(path, base)) and not _allow_sensitive():
+                skipped_sensitive += 1
                 continue
             try:
                 if path.stat().st_size > MAX_GREP_FILE_BYTES:
@@ -323,6 +426,11 @@ def make_grep_handler(root: Optional[Path] = None) -> Callable:
                     )
                     if len(results) >= max_results:
                         return "\n".join(results)
-        return "\n".join(results) if results else "(no matches)"
+        note = (
+            f" [skipped {skipped_sensitive} sensitive file(s)]"
+            if skipped_sensitive
+            else ""
+        )
+        return ("\n".join(results) if results else "(no matches)") + note
 
     return handler
