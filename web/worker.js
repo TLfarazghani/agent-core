@@ -77,13 +77,25 @@ const SYSTEM_PROMPT =
   "Tool calls use this exact format:\n" +
   "<|tool_call_start|>web_search(query=\"...\", kind=\"web\")<|tool_call_end|>";
 
-async function callFileTool(tool, args, approved = false) {
+async function callFileTool(tool, args, confirm = null) {
+  // Mutation tools (write_file/edit_file) are two-step on the server: step 1
+  // returns 202 + a one-time confirm_token bound to the exact arguments;
+  // step 2 resubmits it (the browser engine's own gate ran before this call).
+  // Read-only tools execute on the first call.
   const resp = await fetch("/api/file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tool, arguments: args, approved }),
+    body: JSON.stringify(confirm ? { tool, arguments: args, confirm } : { tool, arguments: args }),
   });
-  const data = await resp.json();
+  let data = await resp.json();
+  if (!confirm && data.status === "pending_confirmation" && data.confirm_token) {
+    const resp2 = await fetch("/api/file", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool, arguments: args, confirm: data.confirm_token }),
+    });
+    data = await resp2.json();
+  }
   if (data.error) return `error: ${data.error}`;
   return data.result;
 }
@@ -130,11 +142,11 @@ const BROWSER_TOOLS = {
   },
   write_file: {
     requires_approval: true,
-    run: async (args) => callFileTool("write_file", args, true),
+    run: async (args) => callFileTool("write_file", args),
   },
   edit_file: {
     requires_approval: true,
-    run: async (args) => callFileTool("edit_file", args, true),
+    run: async (args) => callFileTool("edit_file", args),
   },
   list_dir: {
     requires_approval: false,

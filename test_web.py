@@ -559,8 +559,9 @@ def test_delete_all_sessions() -> None:
         server.stop()
 
 
-def _start_web_server(registry: ToolRegistry) -> tuple[Any, threading.Thread]:
-    server = make_server(AgentApp(registry=registry, health_check=lambda: True), 0)
+def _start_web_server(registry: ToolRegistry, **app_kwargs: Any) -> tuple[Any, threading.Thread]:
+    app = AgentApp(registry=registry, health_check=lambda: True, **app_kwargs)
+    server = make_server(app, 0)
     server.block_on_close = True
     server.port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -802,8 +803,9 @@ def test_api_fetch_proxy_strips_html() -> None:
 
 
 def test_api_file_proxy_reads_and_gates_writes() -> None:
-    """Phase 9: read-only file ops proxy through /api/file; writes need
-    approved=true (the browser engine only sends it after its own gate)."""
+    """Phase 9: read-only file ops proxy through /api/file; mutating tools are
+    two-step (staged one-time confirm token bound to exact arguments) -- a
+    client-supplied flag is never authorization."""
     import tempfile
     from pathlib import Path
 
@@ -836,27 +838,150 @@ def test_api_file_proxy_reads_and_gates_writes() -> None:
             read = post({"tool": "read_file", "arguments": {"path": "note.txt"}})
             assert "hello file" in read["result"]
 
-            forbidden = post(
+            # Mutating tools are two-step: no client-supplied flag authorizes
+            # them. First call stages a one-time token (nothing is written).
+            staged = post(
                 {
                     "tool": "write_file",
                     "arguments": {"path": "new.txt", "content": "x"},
                 }
             )
-            assert "approval required" in forbidden["error"]
+            assert staged["status"] == "pending_confirmation"
+            token = staged["confirm_token"]
             assert not (root / "new.txt").exists()
 
+            # A token bound to different arguments is rejected and consumed.
+            wrong = post(
+                {
+                    "tool": "write_file",
+                    "arguments": {"path": "other.txt", "content": "y"},
+                    "confirm": token,
+                }
+            )
+            assert "403" in wrong.get("error", "") or "confirmation token" in wrong.get("error", "")
+            assert not (root / "new.txt").exists()
+
+            # Re-request the token, then confirm with the EXACT arguments.
+            token = post({"tool": "write_file", "arguments": {"path": "new.txt", "content": "x"}})["confirm_token"]
             written = post(
                 {
                     "tool": "write_file",
                     "arguments": {"path": "new.txt", "content": "x"},
-                    "approved": True,
+                    "confirm": token,
                 }
             )
             assert written["result"].startswith("wrote")
             assert (root / "new.txt").read_text(encoding="utf-8") == "x"
 
+            # Single use: replaying the token is rejected.
+            replay = post(
+                {
+                    "tool": "write_file",
+                    "arguments": {"path": "new.txt", "content": "x2"},
+                    "confirm": token,
+                }
+            )
+            assert "confirmation token" in replay["error"]
+
             bad = post({"tool": "run_code", "arguments": {}})
             assert "unsupported file tool" in bad["error"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+def test_api_file_confirmation_token_expires() -> None:
+    """The staged token bound to exact arguments has a TTL; a frozen fake
+    clock that jumps past it makes the confirm step fail."""
+    import tempfile
+    from pathlib import Path
+
+    from tools import register_files_tools
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        registry = ToolRegistry()
+        register_files_tools(registry, root=root)
+        now = [1000.0]
+
+        server, thread = _start_web_server(
+            registry, confirm_ttl_seconds=60, time_func=lambda: now[0]
+        )
+
+        def post(body: dict) -> dict:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.port}/api/file",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return json.loads(exc.read().decode("utf-8"))
+
+        try:
+            staged = post({"tool": "write_file", "arguments": {"path": "a.txt", "content": "x"}})
+            assert staged["status"] == "pending_confirmation"
+            now[0] += 61.0  # jump past the TTL
+            expired = post(
+                {
+                    "tool": "write_file",
+                    "arguments": {"path": "a.txt", "content": "x"},
+                    "confirm": staged["confirm_token"],
+                }
+            )
+            assert "confirmation token" in expired["error"]
+            assert not (root / "a.txt").exists()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+def test_request_body_size_cap() -> None:
+    """POST bodies over AgentApp.max_body_bytes answer 413 without reading."""
+    import tempfile
+
+    from tools import register_files_tools
+
+    with tempfile.TemporaryDirectory() as tmp:
+        registry = ToolRegistry()
+        register_files_tools(registry, root=tmp)
+        server, thread = _start_web_server(registry, max_body_bytes=256)
+
+        def post(body: dict) -> tuple[int, dict]:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.port}/api/file",
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as resp:
+                    return resp.status, json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read().decode("utf-8"))
+
+        try:
+            # Read-only tool with a small body still works.
+            code, ok = post({"tool": "list_dir", "arguments": {}})
+            assert code == 200
+
+            big = post(
+                {
+                    "tool": "write_file",
+                    "arguments": {"path": "big.txt", "content": "y" * 1000},
+                }
+            )
+            assert big[0] == 413
+            assert "too large" in big[1]["error"]
+
+            # Small mutating body still goes through the normal two-step.
+            code, staged = post({"tool": "write_file", "arguments": {"path": "ok.txt", "content": "z"}})
+            assert code == 202 and staged["status"] == "pending_confirmation"
         finally:
             server.shutdown()
             server.server_close()

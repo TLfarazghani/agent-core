@@ -78,6 +78,18 @@ $env:AGENT_CORE_SMTP_FROM     = "you@gmail.com"   # optional, defaults to AGENT_
 
 Attachments resolve under `AGENT_CORE_FILE_ROOT`. Without `AGENT_CORE_SMTP_HOST` the tool reports it is unconfigured instead of failing silently. (Messaging — `send_message` — stays opt-in behind `MCP_BASE_URL`.)
 
+## Security model / trust boundary
+
+The web UI + API are **local-only and not authenticated**. Concrete protections and their exact scope:
+
+- `web/server.py` binds `127.0.0.1` only, and requires the request Host header (and Origin, when present) to be loopback — that is a **CSRF / DNS-rebinding defense against your browser**, not authentication.
+- **Any other local process running as your user can talk to the API directly** (list/read/delete sessions, call the file tools, or complete its own write confirmations). The real security boundary is your user account, not this server. Do not expose the port beyond loopback.
+- Mutating file tools (`write_file`/`edit_file` via `POST /api/file`) are **not** authorized by a caller-supplied flag: the first call returns `202` with a one-time `confirm_token` bound to the exact arguments; the write happens only when the token is resubmitted (within 60 s) with identical arguments.
+- POST request bodies are capped at 10 MB (`AGENT_CORE_WEB_MAX_BODY` env override); oversize requests answer `413`.
+- `fetch_url`/`web_search` block private/loopback/link-local/metadata destinations after DNS resolution and re-check every redirect (SSRF guard; 1 MB per-hop download cap).
+- CLI and web approvals (`run_code`, writes, external sends) are always human-gated via `resolve_approval`; `auto` mode never auto-approves code execution or external sends.
+- Sessions and memory live at `%USERPROFILE%\.agent-core\` — same user scope as the rest of the app.
+
 ## Key documents
 
 - [docs/plan.md](docs/plan.md) — phased build plan with verification gates

@@ -5,6 +5,29 @@ Server-Sent Events. Reuses ``core.loop`` + ``windows.orchestrator``; the browser
 never re-implements the loop, it only renders ``AgentState`` and resolves
 approvals.
 
+Trust boundary (important, read this before treating the API as secure)::
+
+    The API is LOCAL-ONLY and NOT AUTHENTICATED. The loopback bind plus the
+    Host/Origin checks below defend against browser CSRF and DNS rebinding.
+    They are NOT authentication: any other process running as this user can
+    call these endpoints directly (read/delete sessions, invoke the file/dir
+    tools, or approve its own file writes by completing the confirmation
+    handshake itself). Treat the server as a single-user localhost app whose
+    other protections are ergonomics against accidents, not a hard security
+    boundary -- bounded by the same user account as every other process.
+
+Mitigations on top of the loopback bind:
+- Host/Origin must be loopback (CSRF / DNS-rebinding defense, see
+  ``_request_allowed``) -- OPTIONS preflights answer 403, no CORS headers.
+- POST bodies are capped (``DEFAULT_MAX_BODY_BYTES``, override via
+  ``AGENT_CORE_WEB_MAX_BODY``); oversize requests answer 413 unread.
+- Mutating file tools (write_file/edit_file) never trust a client-supplied
+  ``approved`` flag. The first call stages a ONE-TIME confirmation token
+  bound to the exact arguments (``stage_confirmation``); execution requires
+  resubmitting that token STEP-WISE with identical arguments within
+  ``DEFAULT_CONFIRM_TTL`` seconds. This is an intentional two-round-trip
+  confirm, not authentication (see the trust boundary above).
+
 Run::
 
     .\\venv\\Scripts\\python web\\server.py [port]      # default 127.0.0.1:8002
@@ -18,7 +41,9 @@ Endpoints
     GET  /api/fetch?url=..          -> fetch a page as plain text
     GET  /api/commands              -> shared slash-command list (Phase 8)
     GET  /api/skills                -> available skills (Phase 10)
-    POST /api/file                  -> run a file tool {"tool", "arguments", "approved"} (Phase 9)
+    POST /api/file                  -> run a file tool {"tool", "arguments"};
+                                       mutating tools return 202 with a
+                                       {"confirm_token"} to resubmit (Phase 9)
     POST /api/sessions              -> create a session (body: optional {"max_turns": int})
     GET  /api/sessions              -> list saved sessions
     DELETE /api/sessions            -> delete ALL sessions (returns {"deleted": int})
@@ -38,9 +63,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -93,6 +120,22 @@ FILE_API_TOOLS = {
     "glob",
     "grep",
 }
+
+# POST-body cap (bytes). Covers every endpoint; the largest legitimate body is
+# a file-write's content, which stays far below this.
+DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024
+
+# One-time confirmation tokens for mutating file tools expire this quickly
+# (seconds). The browser confirms in its next round-trip; slower paths SHOULD
+# re-issue instead of relying on a stale token.
+DEFAULT_CONFIRM_TTL = 60
+
+# Potential staged confirmations; the oldest is dropped when full.
+MAX_STAGED_CONFIRMATIONS = 128
+
+
+class _BodyTooLarge(Exception):
+    """Request body exceeded the cap; the 413 was already sent."""
 
 ProviderFactory = Callable[[Callable[[str], None]], Any]
 
@@ -149,8 +192,22 @@ class AgentApp:
         provider_factory: ProviderFactory | None = None,
         health_check: Callable[[], bool] | None = None,
         doctor_probes: dict[str, Callable[[], dict]] | None = None,
+        max_body_bytes: int | None = None,
+        confirm_ttl_seconds: float = DEFAULT_CONFIRM_TTL,
+        time_func: Callable[[], float] = time.time,
     ) -> None:
         self.registry = registry or default_registry()
+        # Request-body cap: env override or the documented default.
+        if max_body_bytes is None:
+            configured = os.environ.get("AGENT_CORE_WEB_MAX_BODY")
+            max_body_bytes = int(configured) if configured else DEFAULT_MAX_BODY_BYTES
+        cap = max(int(max_body_bytes), 0)
+        self.max_body_bytes = cap if cap > 0 else DEFAULT_MAX_BODY_BYTES
+        # One-time confirmation tokens bound to exact arguments (never a
+        # client-supplied "approved" flag as authorization).
+        self.confirm_ttl_seconds = confirm_ttl_seconds
+        self.time_func = time_func
+        self.confirmations: dict[str, dict[str, Any]] = {}
         mcp_base = os.environ.get("MCP_BASE_URL")
         if mcp_base:
             from tools import register_networked_tools
@@ -176,6 +233,43 @@ class AgentApp:
     def _lock_for(self, session_id: str) -> threading.Lock:
         with self._lock_guard:
             return self._locks.setdefault(session_id, threading.Lock())
+
+    # ---------- one-time file-tool confirmations ----------
+    #
+    # Mutating file tools (write_file/edit_file) are never authorized by a
+    # client-supplied "approved" flag. Step 1 stages a token bound to the
+    # exact (tool, arguments); step 2 resubmits that token with identical
+    # arguments. Tokens are single-use and expire after confirm_ttl_seconds.
+    # This is a two-round-trip confirm + argument binding, NOT authentication
+    # (see the trust boundary in the module docstring).
+
+    def stage_confirmation(self, tool: str, arguments: dict[str, Any]) -> str:
+        now = self.time_func()
+        # Housekeeping first: drop expired stages, then bound the store size.
+        for stale in [k for k, v in self.confirmations.items() if v["expires"] < now]:
+            del self.confirmations[stale]
+        while len(self.confirmations) >= MAX_STAGED_CONFIRMATIONS:
+            self.confirmations.pop(next(iter(self.confirmations)))
+        token = secrets.token_urlsafe(24)
+        self.confirmations[token] = {
+            "tool": tool,
+            "arguments": dict(arguments),
+            "expires": now + self.confirm_ttl_seconds,
+        }
+        return token
+
+    def pop_confirmation(
+        self, token: str, tool: str, arguments: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Consume a staged token; None when unknown/expired/mismatched."""
+        entry = self.confirmations.pop(token, None)
+        if entry is None:
+            return None
+        if entry["expires"] < self.time_func():
+            return None
+        if entry["tool"] != tool or entry["arguments"] != arguments:
+            return None
+        return entry["arguments"]
 
     def get_session(self, session_id: str) -> AgentState:
         state = self._sessions.get(session_id)
@@ -392,7 +486,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_json(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        app: AgentApp = self.server.app
+        if length > app.max_body_bytes:
+            self._send_json(
+                413,
+                {
+                    "error": (
+                        f"request body too large: {length} bytes exceeds the "
+                        f"{app.max_body_bytes}-byte limit"
+                    )
+                },
+            )
+            raise _BodyTooLarge()
         if length <= 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
@@ -445,13 +551,39 @@ class Handler(BaseHTTPRequestHandler):
         app: AgentApp,
         tool: str,
         args: dict[str, Any],
-        approved: bool,
+        confirm_token: str | None = None,
     ) -> None:
         definition = app.registry.definition(tool)
         if tool not in FILE_API_TOOLS or definition is None:
             return self._send_json(400, {"error": f"unsupported file tool: {tool!r}"})
-        if definition.requires_approval and not approved:
-            return self._send_json(403, {"error": "approval required"})
+        if definition.requires_approval:
+            # Never trust a client-supplied "approved" flag as authorization:
+            # mutating file tools require a staged one-time token bound to the
+            # exact arguments. First call -> 202 + token; resubmitting the
+            # token (with identical arguments) executes the tool once.
+            if not confirm_token:
+                token = app.stage_confirmation(tool, args)
+                return self._send_json(
+                    202,
+                    {
+                        "status": "pending_confirmation",
+                        "confirm_token": token,
+                        "tool": tool,
+                        "ttl_seconds": app.confirm_ttl_seconds,
+                    },
+                )
+            confirmed = app.pop_confirmation(confirm_token, tool, args)
+            if confirmed is None:
+                return self._send_json(
+                    403,
+                    {
+                        "error": (
+                            "invalid, expired, or argument-mismatched "
+                            "confirmation token; re-request a new one"
+                        )
+                    },
+                )
+            args = confirmed
         try:
             msg = app.registry.execute(
                 ToolCall(id=f"api:{tool}", name=tool, arguments=args)
@@ -588,6 +720,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802 - http.server API
         if not self._request_allowed():
             return self._send_json(403, {"error": "forbidden"})
+        try:
+            self._do_post()
+        except _BodyTooLarge:
+            return  # the 413 response was already sent by _read_json
+
+    def _do_post(self) -> None:
         app: AgentApp = self.server.app
         path = self.path.split("?", 1)[0]
         if path == "/api/file":
@@ -596,7 +734,10 @@ class Handler(BaseHTTPRequestHandler):
             arguments = body.get("arguments") or {}
             if not isinstance(arguments, dict):
                 return self._send_json(400, {"error": "arguments must be an object"})
-            return self._file_dispatch(app, tool, arguments, bool(body.get("approved")))
+            confirm_token = body.get("confirm")
+            if confirm_token is not None and not isinstance(confirm_token, str):
+                return self._send_json(400, {"error": "confirm must be a token string"})
+            return self._file_dispatch(app, tool, arguments, confirm_token)
         if path == "/api/sessions":
             body = self._read_json()
             max_turns = self._coerce_max_turns(body)

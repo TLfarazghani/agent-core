@@ -89,6 +89,9 @@ agent-core/
   Core-agent.bat           # one-click launcher: llama-server + Docker check + web UI + browser
   web/                     # Web UI + agent API server (stdlib only)
     server.py              # ThreadingHTTPServer; SSE API (token/tool_call/approval/done); sessions
+                           #   trust boundary: local-only, NOT authenticated (Host/Origin loopback
+                           #   checks = CSRF/DNS-rebinding defense, not auth; body-size cap;
+                           #   /api/file mutations use one-time exact-argument confirm tokens)
     index.html             # SPA shell
     style.css              # dark local-first theme (approval amber, tool gray)
     app.js                 # renders AgentState, tool cards, approval modal, session sidebar, slash commands
